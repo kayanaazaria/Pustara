@@ -8,7 +8,7 @@ Pustara merupakan aplikasi perpustakaan digital generasi baru yang menggabungkan
  
 **Ketua Kelompok**   : 
 
-**Anggota 1**   :
+**Anggota 1**   : Syifa Alifiya - 23/517440/TK/56918
 
 **Anggota 2**   :
 
