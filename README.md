@@ -10,7 +10,7 @@ Pustara merupakan aplikasi perpustakaan digital generasi baru yang menggabungkan
 
 **Anggota 1**   : Syifa Alifiya - 23/517440/TK/56918
 
-**Anggota 2**   :
+**Anggota 2**   : Kayana Anindya Azaria - 23/521475/TK/57528
 
  
 ---
