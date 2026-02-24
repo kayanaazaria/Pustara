@@ -6,7 +6,7 @@ Pustara merupakan aplikasi perpustakaan digital generasi baru yang menggabungkan
  
 ## Tim Kwetiaw
  
-**Ketua Kelompok**   : Ameliana Hardianti Utari -  23/51399968/TK/56455
+**Ketua Kelompok**   : Ameliana Hardianti Utari - 23/513968/TK/56455
 
 **Anggota 1**   :
 
