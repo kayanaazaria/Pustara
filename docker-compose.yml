@@ -1,0 +1,11 @@
+services:
+  pustara:
+    build:
+      context: ./backend
+      dockerfile: ../Dockerfile
+    container_name: pustara-backend
+    ports:
+      - "3000:3000"
+    restart: always
+
+    
