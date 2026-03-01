@@ -1,0 +1,14 @@
+name: Pustara CI
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Test Build
+        run: echo "GitHub Action berjalan dengan sukses"
