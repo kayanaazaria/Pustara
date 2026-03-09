@@ -14,6 +14,7 @@
 require("dotenv").config();
 
 const express = require("express");
+const cors = require("cors");
 const CONFIG = require("./constants/config");
 const FirebaseProvider = require("./providers/firebaseProvider");
 const AuthService = require("./services/authService");
@@ -27,6 +28,12 @@ const app = express();
 
 // Middleware
 app.use(express.json());
+app.use(cors({
+  origin: CONFIG.CORS_ORIGIN || "http://localhost:3001",
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true,
+}));
 
 // Setup Auth
 const authProvider = new FirebaseProvider();
