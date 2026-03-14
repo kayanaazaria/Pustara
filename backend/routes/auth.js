@@ -25,6 +25,7 @@ const asyncHandler = (fn) => (req, res, next) => {
  */
 function createAuthRoutes(authService, verifyTokenMiddleware) {
   const router = express.Router();
+  const UserService = require("../services/userService");
 
   // POST /auth/signup - Register new user
   router.post(
@@ -44,12 +45,25 @@ function createAuthRoutes(authService, verifyTokenMiddleware) {
     })
   );
 
-  // POST /auth/verify-token - Verify token
+  // POST /auth/verify-token - Verify token & auto-create user in Azure SQL
   router.post(
     "/verify-token",
     asyncHandler(async (req, res) => {
-      const result = await authService.verifyToken(req.body.token);
-      res.status(result.status).json(result);
+      const authResult = await authService.verifyToken(req.body.token);
+      
+      if (authResult.success) {
+        const { uid, email, displayName } = authResult.user;
+        
+        // Auto-create user in Azure SQL jika belum ada
+        const userExists = await UserService.getUserByUid(uid);
+        if (!userExists.data) {
+          console.log(`📝 First login detected for ${email}, syncing to Azure SQL...`);
+          await UserService.createUser(uid, email, displayName);
+          console.log(`✅ User synced successfully`);
+        }
+      }
+      
+      res.status(authResult.status).json(authResult);
     })
   );
 
