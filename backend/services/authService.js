@@ -4,6 +4,8 @@
  * Independent dari provider (Firebase, Azure, etc)
  */
 
+const UserService = require('./userService');
+
 class AuthService {
   constructor(authProvider) {
     this.provider = authProvider; // FirebaseProvider atau AzureProvider
@@ -111,6 +113,15 @@ class AuthService {
       };
     }
 
+    // Save user to Azure SQL Database
+    const dbResult = await UserService.createUser(result.data.uid, result.data.email);
+
+    if (!dbResult.success) {
+      console.error("Warning: User created in Firebase but failed to save to database:", dbResult.error);
+      // Tetap return success karena Firebase auth berhasil
+      // Database sync bisa dilakukan kemudian
+    }
+
     return {
       success: true,
       user: {
@@ -146,6 +157,20 @@ class AuthService {
         error: result.error || "Sign in failed",
         status: 401,
       };
+    }
+
+    // Fetch user data dari Azure SQL Database
+    const uid = result.data.uid;
+    const dbResult = await UserService.getUserByUid(uid);
+    
+    // Jika user tidak ada di database, create record untuk backward compatibility
+    if (!dbResult.data && dbResult.success) {
+      console.log(`⚠️ User ${uid} not found in DB, creating...`);
+      const createResult = await UserService.createUser(uid, email);
+      if (!createResult.success) {
+        console.error(`Failed to create user in DB for ${uid}:`, createResult.error);
+        // Still return success karena Firebase auth berhasil
+      }
     }
 
     return {
