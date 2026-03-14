@@ -26,27 +26,35 @@ function createSurveyRoutes(verifyTokenMiddleware) {
   const router = express.Router();
 
   // POST /survey/save - Save or update user survey
+  // Flow: Verify Firebase token → Ensure user exists → Save survey
   router.post(
     "/save",
     verifyTokenMiddleware,
     asyncHandler(async (req, res) => {
+      const UserService = require("../services/userService");
+      
       const uid = req.user.uid;
-      const email = req.user.email; // ← Get email dari token!
-      
-      // Auto-create user kalau belum ada
-      const userService = require("../services/userService");
-      let userResult = await userService.getUserByUid(uid);
-      
-      if (!userResult.data) {
-        console.log(`⚠️ User not found, creating with email: ${email}`);
-        const createResult = await userService.createUser(uid, email);
+      const email = req.user.email;
+      const surveyData = req.body;
+
+      // 1️⃣ Check if user exists in Azure SQL
+      const userExists = await UserService.getUserByUid(uid);
+
+      // 2️⃣ Auto-create user if needed (sync Firebase to SQL)
+      if (!userExists.data) {
+        console.log(`📝 New user detected (${email}), syncing to Azure SQL...`);
+        const createResult = await UserService.createUser(uid, email);
         if (!createResult.success) {
-          return res.status(400).json(createResult);
+          return res.status(500).json({
+            success: false,
+            error: "Failed to create user record",
+          });
         }
+        console.log(`✅ User synced successfully`);
       }
-      
-      // Now save survey
-      const result = await UserSurveyService.saveSurvey(uid, req.body);
+
+      // 3️⃣ Save survey data
+      const result = await UserSurveyService.saveSurvey(uid, surveyData);
       res.status(result.success ? 201 : 400).json(result);
     })
   );
