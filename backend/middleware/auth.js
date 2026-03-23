@@ -49,4 +49,32 @@ const createVerifyTokenMiddleware = (authService) => {
   };
 };
 
-module.exports = { createVerifyTokenMiddleware };
+/**
+ * Optional token verification middleware for routes that allow both authenticated and unauthenticated users.
+ * valid token -> req.user (for redis tracking).
+ * no token -> req.user empty, but still allow access (guest).
+ */
+const createOptionalVerifyTokenMiddleware = (authService) => {
+  return async (req, res, next) => {
+    try {
+      const authHeader = req.headers.authorization;
+      const token = authHeader?.split(" ")[1];
+
+      if (!token) return next();
+
+      // if token exists, try to verify.
+      const result = await authService.verifyToken(token);
+      if (result.success) {
+        req.user = result.user;
+      }
+      next();
+    } catch (error) {
+      next(); 
+    }
+  };
+};
+
+module.exports = { 
+  createVerifyTokenMiddleware,
+  createOptionalVerifyTokenMiddleware
+};

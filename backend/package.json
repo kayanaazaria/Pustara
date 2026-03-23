@@ -12,9 +12,14 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@upstash/redis": "^1.37.0",
+    "axios": "^1.13.6",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "firebase-admin": "^13.7.0",
-    "nodemon": "^3.1.14"
+    "mssql": "^10.0.1",
+    "node-cron": "^4.2.1",
+    "nodemon": "^3.1.14",
+    "pg": "^8.20.0"
   }
 }

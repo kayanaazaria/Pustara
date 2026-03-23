@@ -1,0 +1,118 @@
+/**
+ * User Service — Database Operations
+ * Support Neon PostgreSQL (dummy) dan Azure SQL (prod)
+ * Query ditulis dalam PostgreSQL syntax — executeQuery() handle konversi ke Azure
+ */
+
+const { executeQuery, isDummy } = require('../config/database');
+
+class UserService {
+  /**
+   * Save user to database (signup)
+   * @param {string} uid - Firebase UID
+   * @param {string} email - User email
+   * @param {string} displayName - User display name (optional)
+   * @returns {Promise<Object>} - Created user atau error
+   */
+  static async createUser(uid, email, displayName = null) {
+    try {
+      console.log(`📝 Creating user: uid=${uid}, email=${email}`);
+
+      let rows;
+      if (isDummy) {
+        // Neon: users punya kolom firebase_uid, username, display_name
+        const username = email.split('@')[0].toLowerCase().replace(/[^a-z0-9_]/g, '_');
+        rows = await executeQuery(`
+          INSERT INTO users (firebase_uid, username, display_name, email)
+          VALUES ($1, $2, $3, $4)
+          ON CONFLICT (firebase_uid) DO UPDATE SET updated_at = NOW()
+          RETURNING *
+        `, [uid, username, displayName || username, email]);
+      } else {
+        // Azure SQL
+        rows = await executeQuery(`
+          INSERT INTO Users (uid, email, displayName)
+          VALUES ($1, $2, $3);
+          SELECT * FROM Users WHERE uid = $1;
+        `, [uid, email, displayName || email.split('@')[0]]);
+      }
+
+      console.log(`✅ User created: ${uid}`);
+      return { success: true, data: rows[0] };
+    } catch (error) {
+      console.error(`❌ createUser error:`, error.message);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Get user by Firebase UID
+   */
+  static async getUserByUid(uid) {
+    try {
+      const col  = isDummy ? 'firebase_uid' : 'uid';
+      const rows = await executeQuery(`SELECT * FROM ${isDummy ? 'users' : 'Users'} WHERE ${col} = $1`, [uid]);
+      return { success: true, data: rows[0] || null };
+    } catch (error) {
+      console.error('getUserByUid error:', error.message);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Get user by email
+   */
+  static async getUserByEmail(email) {
+    try {
+      const rows = await executeQuery(`SELECT * FROM ${isDummy ? 'users' : 'Users'} WHERE email = $1`, [email]);
+      return { success: true, data: rows[0] || null };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+/**
+   * Update user profile
+   */
+  static async updateUser(uid, updates) {
+    try {
+      const allowed = isDummy
+        ? ['display_name', 'avatar_url', 'bio', 'preferred_genres']
+        : ['displayName', 'photoURL'];
+
+      const fields = Object.keys(updates).filter(k => allowed.includes(k));
+      if (!fields.length) return { success: false, error: 'No valid fields to update' };
+
+      const setClause = fields.map((f, i) => `${f} = $${i + 2}`).join(', ');
+      const values    = [uid, ...fields.map(f => updates[f])];
+      
+      let rows;
+      if (isDummy) {
+        // Neon (PostgreSQL) mode
+        rows = await executeQuery(
+          `UPDATE users SET ${setClause}, updated_at = NOW() WHERE firebase_uid = $1 RETURNING *`,
+          values
+        );
+      } else {
+        // Azure SQL mode (GETDATE() dan w/o RETURNING)
+        rows = await executeQuery(
+          `UPDATE Users SET ${setClause}, updatedAt = GETDATE() WHERE uid = $1;
+           SELECT * FROM Users WHERE uid = $1;`,
+          values
+        );
+      }
+
+      return { success: true, data: rows[0] };
+    } catch (error) {
+      console.error('❌ updateUser error:', error.message);
+      return { success: false, error: error.message };
+    }
+  }
+
+  static async userExists(uid) {
+    const result = await this.getUserByUid(uid);
+    return result.success && result.data !== null;
+  }
+}
+
+module.exports = UserService;
