@@ -12,15 +12,23 @@
  */
 
 require("dotenv").config();
+console.log("🔥 DEBUG URL:", process.env.FASTAPI_URL);
 
 const express = require("express");
+const cors = require("cors");
 const CONFIG = require("./constants/config");
 const FirebaseProvider = require("./providers/firebaseProvider");
 const AuthService = require("./services/authService");
-const { createVerifyTokenMiddleware } = require("./middleware/auth");
+const { createVerifyTokenMiddleware, createOptionalVerifyTokenMiddleware } = require("./middleware/auth");
 const { createAuthRoutes } = require("./routes/auth");
 const createSurveyRoutes = require("./routes/survey");
 const { initializeDatabase, createUsersTable, createUserSurveyTable } = require("./config/database");
+const { getAllBooks, getBookById } = require('./controllers/bookController');
+
+// Routes
+const createRecommendationsRoutes = require('./routes/recommendations');
+
+require('./jobs/cron'); //init cron jobs for ai-related tasks
 
 // ==========================================
 // INITIALIZE
@@ -41,11 +49,18 @@ app.use((req, res, next) => {
 
 // Middleware
 app.use(express.json());
+app.use(cors({
+  origin: CONFIG.CORS_ORIGIN || "http://localhost:3001",
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true,
+}));
 
 // Setup Auth
 const authProvider = new FirebaseProvider();
 const authService = new AuthService(authProvider);
 const verifyTokenMiddleware = createVerifyTokenMiddleware(authService);
+const optionalVerifyTokenMiddleware = createOptionalVerifyTokenMiddleware(authService);
 
 // ==========================================
 // ROUTES
@@ -67,6 +82,13 @@ app.get("/api/protected", verifyTokenMiddleware, (req, res) => {
   res.json({ message: "Protected data", user: req.user });
 });
 
+// Recommendations Routes
+app.use('/recommendations', createRecommendationsRoutes(verifyTokenMiddleware));
+
+// Books Routes
+app.get('/books', getAllBooks);
+app.get('/books/:id', optionalVerifyTokenMiddleware, getBookById);
+
 // ==========================================
 // ERROR HANDLING
 // ==========================================
@@ -80,17 +102,37 @@ app.use((err, req, res, next) => {
 // ==========================================
 async function startServer() {
   try {
-    // Initialize database
     console.log("Initializing Azure SQL Database...");
     await initializeDatabase();
     await createUsersTable();
     await createUserSurveyTable();
     
-    app.listen(CONFIG.PORT, () => {
+    app.listen(CONFIG.PORT, async () => {
       console.log(`${CONFIG.MESSAGES.SERVER_RUNNING} ${CONFIG.PORT}`);
       console.log(`Environment: ${CONFIG.NODE_ENV}`);
       console.log(`Auth: Firebase`);
       console.log(`📊 Database: Azure SQL`);
+
+      console.log("developing PustarAI (Auto-Reindex)...");
+      try {
+        const aiUrl = process.env.FASTAPI_URL || 'http://localhost:8001';
+        const cronSecret = process.env.CRON_SECRET || 'pustara-cron-2025';
+        
+        const res = await fetch(`${aiUrl}/reindex?key=${cronSecret}`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${process.env.HF_TOKEN}`
+          }
+        });
+        
+        if (res.ok) {
+          console.log("✅ PustarAI successfully reindexed and is ready to use!");
+        } else {
+          console.log(`⚠️ PustarAI failed to reindex. Status: ${res.status}`);
+        }
+      } catch (err) {
+        console.error("❌ Failed to contact HF", err.message);
+      }
     });
   } catch (error) {
     console.error("❌ Failed to start server:", error);

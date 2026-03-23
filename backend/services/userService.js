@@ -1,9 +1,10 @@
 /**
- * User Service - Database Operations
- * Handles CRUD operations untuk user data di Azure SQL
+ * User Service — Database Operations
+ * Support Neon PostgreSQL (dummy) dan Azure SQL (prod)
+ * Query ditulis dalam PostgreSQL syntax — executeQuery() handle konversi ke Azure
  */
 
-const { getPool } = require('../config/database');
+const { executeQuery, isDummy } = require('../config/database');
 
 class UserService {
   /**
@@ -15,159 +16,102 @@ class UserService {
    */
   static async createUser(uid, email, displayName = null) {
     try {
-      const pool = getPool();
-      
-      console.log(`📝 Creating user in DB: uid=${uid}, email=${email}`);
-      
-      const query = `
-        INSERT INTO Users (uid, email, displayName)
-        VALUES (@uid, @email, @displayName);
-        SELECT * FROM Users WHERE uid = @uid;
-      `;
+      console.log(`📝 Creating user: uid=${uid}, email=${email}`);
 
-      const result = await pool
-        .request()
-        .input('uid', uid)
-        .input('email', email)
-        .input('displayName', displayName || email.split('@')[0])
-        .query(query);
+      let rows;
+      if (isDummy) {
+        // Neon: users punya kolom firebase_uid, username, display_name
+        const username = email.split('@')[0].toLowerCase().replace(/[^a-z0-9_]/g, '_');
+        rows = await executeQuery(`
+          INSERT INTO users (firebase_uid, username, display_name, email)
+          VALUES ($1, $2, $3, $4)
+          ON CONFLICT (firebase_uid) DO UPDATE SET updated_at = NOW()
+          RETURNING *
+        `, [uid, username, displayName || username, email]);
+      } else {
+        // Azure SQL
+        rows = await executeQuery(`
+          INSERT INTO Users (uid, email, displayName)
+          VALUES ($1, $2, $3);
+          SELECT * FROM Users WHERE uid = $1;
+        `, [uid, email, displayName || email.split('@')[0]]);
+      }
 
-      console.log(`✅ User created successfully: ${uid}`);
-      return {
-        success: true,
-        data: result.recordset[0],
-      };
+      console.log(`✅ User created: ${uid}`);
+      return { success: true, data: rows[0] };
     } catch (error) {
-      console.error(`❌ Error creating user ${uid}:`, error.message);
-      return {
-        success: false,
-        error: error.message,
-      };
+      console.error(`❌ createUser error:`, error.message);
+      return { success: false, error: error.message };
     }
   }
 
   /**
-   * Get user by UID
-   * @param {string} uid - Firebase UID
-   * @returns {Promise<Object>} - User data atau null
+   * Get user by Firebase UID
    */
   static async getUserByUid(uid) {
     try {
-      const pool = getPool();
-      
-      const query = `SELECT * FROM Users WHERE uid = @uid;`;
-      const result = await pool
-        .request()
-        .input('uid', uid)
-        .query(query);
-
-      return {
-        success: true,
-        data: result.recordset[0] || null,
-      };
+      const col  = isDummy ? 'firebase_uid' : 'uid';
+      const rows = await executeQuery(`SELECT * FROM ${isDummy ? 'users' : 'Users'} WHERE ${col} = $1`, [uid]);
+      return { success: true, data: rows[0] || null };
     } catch (error) {
-      console.error('Error getting user:', error);
-      return {
-        success: false,
-        error: error.message,
-      };
+      console.error('getUserByUid error:', error.message);
+      return { success: false, error: error.message };
     }
   }
 
   /**
    * Get user by email
-   * @param {string} email - User email
-   * @returns {Promise<Object>} - User data atau null
    */
   static async getUserByEmail(email) {
     try {
-      const pool = getPool();
-      
-      const query = `SELECT * FROM Users WHERE email = @email;`;
-      const result = await pool
-        .request()
-        .input('email', email)
-        .query(query);
-
-      return {
-        success: true,
-        data: result.recordset[0] || null,
-      };
+      const rows = await executeQuery(`SELECT * FROM ${isDummy ? 'users' : 'Users'} WHERE email = $1`, [email]);
+      return { success: true, data: rows[0] || null };
     } catch (error) {
-      console.error('Error getting user by email:', error);
-      return {
-        success: false,
-        error: error.message,
-      };
+      return { success: false, error: error.message };
     }
   }
 
-  /**
+/**
    * Update user profile
-   * @param {string} uid - Firebase UID
-   * @param {Object} updates - Fields to update
-   * @returns {Promise<Object>} - Updated user atau error
    */
   static async updateUser(uid, updates) {
     try {
-      const pool = getPool();
-      const allowedFields = ['displayName', 'photoURL'];
+      const allowed = isDummy
+        ? ['display_name', 'avatar_url', 'bio', 'preferred_genres']
+        : ['displayName', 'photoURL'];
+
+      const fields = Object.keys(updates).filter(k => allowed.includes(k));
+      if (!fields.length) return { success: false, error: 'No valid fields to update' };
+
+      const setClause = fields.map((f, i) => `${f} = $${i + 2}`).join(', ');
+      const values    = [uid, ...fields.map(f => updates[f])];
       
-      // Build dynamic update query
-      let setClause = [];
-      const request = pool.request().input('uid', uid);
-      
-      for (const [key, value] of Object.entries(updates)) {
-        if (allowedFields.includes(key)) {
-          setClause.push(`${key} = @${key}`);
-          request.input(key, value);
-        }
+      let rows;
+      if (isDummy) {
+        // Neon (PostgreSQL) mode
+        rows = await executeQuery(
+          `UPDATE users SET ${setClause}, updated_at = NOW() WHERE firebase_uid = $1 RETURNING *`,
+          values
+        );
+      } else {
+        // Azure SQL mode (GETDATE() dan w/o RETURNING)
+        rows = await executeQuery(
+          `UPDATE Users SET ${setClause}, updatedAt = GETDATE() WHERE uid = $1;
+           SELECT * FROM Users WHERE uid = $1;`,
+          values
+        );
       }
 
-      if (setClause.length === 0) {
-        return {
-          success: false,
-          error: 'No valid fields to update',
-        };
-      }
-
-      setClause.push('updatedAt = GETDATE()');
-
-      const query = `
-        UPDATE Users
-        SET ${setClause.join(', ')}
-        WHERE uid = @uid;
-        SELECT * FROM Users WHERE uid = @uid;
-      `;
-
-      const result = await request.query(query);
-
-      return {
-        success: true,
-        data: result.recordset[0],
-      };
+      return { success: true, data: rows[0] };
     } catch (error) {
-      console.error('Error updating user:', error);
-      return {
-        success: false,
-        error: error.message,
-      };
+      console.error('❌ updateUser error:', error.message);
+      return { success: false, error: error.message };
     }
   }
 
-  /**
-   * Check if user exists
-   * @param {string} uid - Firebase UID
-   * @returns {Promise<boolean>}
-   */
   static async userExists(uid) {
-    try {
-      const result = await this.getUserByUid(uid);
-      return result.success && result.data !== null;
-    } catch (error) {
-      console.error('Error checking user existence:', error);
-      return false;
-    }
+    const result = await this.getUserByUid(uid);
+    return result.success && result.data !== null;
   }
 }
 
