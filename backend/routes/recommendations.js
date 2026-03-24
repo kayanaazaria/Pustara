@@ -1,10 +1,6 @@
 /**
  * Recommendations Routes
  * Proxy to FastAPI AI server on Hugging Face.
- * * Improvements:
- * - Send user_gender, user_age, context (last_book_id, recent_books) to FastAPI
- * - Track every recommendation interaction to Redis via pushActivity
- * - Fetch user survey before calling AI to make recommendations more personalized
  */
 
 const express = require('express');
@@ -44,16 +40,37 @@ async function proxyToAI(method, path, body = null) {
 
 /**
  * Fetch user survey data (gender, age, genre pref) from the DB.
- * Graceful fallback — if it fails, return {} so the process continues.
+ * Udah disesuaikan dengan kebutuhan Model C (Demographic) FastAPI v4.1
  */
 async function getUserSurveyContext(uid) {
   try {
     const result = await UserSurveyService.getSurveyByUid(uid);
     if (result.success && result.data) {
+      // Pastikan format umurnya sesuai dengan yg diminta FastAPI: "<20", "21-30", "31-40", atau ">40"
+      let ageGroup = null;
+      const exactAge = parseInt(result.data.age);
+      if (!isNaN(exactAge)) {
+        if (exactAge < 20) ageGroup = "<20";
+        else if (exactAge <= 30) ageGroup = "21-30";
+        else if (exactAge <= 40) ageGroup = "31-40";
+        else ageGroup = ">40";
+      } else {
+        ageGroup = result.data.age; // Kalau dari DB udah string format age group
+      }
+
+      // Pastikan preferred_genres bentuknya Array
+      let genresArray = [];
+      if (typeof result.data.favoriteGenre === 'string') {
+        genresArray = result.data.favoriteGenre.split(',').map(g => g.trim());
+      } else if (Array.isArray(result.data.favoriteGenre)) {
+        genresArray = result.data.favoriteGenre;
+      }
+
       return {
-        user_gender: result.data.gender      || null,
-        user_age:    result.data.age         || null,
-        genre_pref:  result.data.favoriteGenre || null,
+        user_gender:      result.data.gender || null, // "L", "P", "X"
+        user_age:         result.data.age ? String(result.data.age) : null, // Buat prompt Groq
+        user_age_group:   ageGroup, // Buat Model C
+        preferred_genres: genresArray.length > 0 ? genresArray : null,
       };
     }
   } catch (e) {
@@ -84,7 +101,6 @@ function createRecommendationsRoutes(verifyTokenMiddleware) {
 
       const uid = req.user.uid;
 
-      // Fetch survey + recent books in parallel
       const [surveyCtx, recentBooks] = await Promise.all([
         getUserSurveyContext(uid),
         getUserRecentBooks(uid, 10),
@@ -98,10 +114,12 @@ function createRecommendationsRoutes(verifyTokenMiddleware) {
         attached_book_desc:  attached_book_desc  || null,
         user_gender:         surveyCtx.user_gender,
         user_age:            surveyCtx.user_age,
-        chat_history:        req.body.chat_history || [],   // ← forward history from FE
+        user_age_group:      surveyCtx.user_age_group,   // ✅ TAMBAHAN BARU
+        preferred_genres:    surveyCtx.preferred_genres, // ✅ TAMBAHAN BARU
+        chat_history:        req.body.chat_history || [],
         context: {
           ...clientContext,
-          genre_pref:   surveyCtx.genre_pref,
+          genre_pref:   surveyCtx.preferred_genres ? surveyCtx.preferred_genres.join(',') : null,
           recent_books: recentBooks,
         },
       });
@@ -111,7 +129,6 @@ function createRecommendationsRoutes(verifyTokenMiddleware) {
   );
 
   // ── POST /recommendations/direct ──────────────────────────────────────────
-  // Called from the book detail page → "You might also like"
   router.post(
     '/direct',
     verifyTokenMiddleware,
@@ -121,14 +138,18 @@ function createRecommendationsRoutes(verifyTokenMiddleware) {
       if (!bid) return res.status(400).json({ success: false, error: 'book_id is required' });
 
       const uid = req.user.uid;
-
-      // Track that the user viewed recommendations from this book (weak signal)
       pushActivity(uid, bid, 'view').catch(() => {});
 
+      // ✅ TAMBAHAN BARU: Kirim demographic hint biar direct reko-nya personal buat user cold
+      const surveyCtx = await getUserSurveyContext(uid);
+
       const result = await proxyToAI('POST', '/recommendations/direct', {
-        book_id:  bid,
-        user_id:  uid,
-        n:        top_n,
+        book_id:          bid,
+        user_id:          uid,
+        n:                top_n,
+        user_gender:      surveyCtx.user_gender,
+        user_age_group:   surveyCtx.user_age_group,
+        preferred_genres: surveyCtx.preferred_genres
       });
 
       res.json({ success: true, data: result });
@@ -136,8 +157,6 @@ function createRecommendationsRoutes(verifyTokenMiddleware) {
   );
 
   // ── POST /recommendations/activity ────────────────────────────────────────
-  // New endpoint — FE calls this whenever a user interacts with a book
-  // (view, read, like, bookmark, share, review)
   router.post(
     '/activity',
     verifyTokenMiddleware,
@@ -154,10 +173,8 @@ function createRecommendationsRoutes(verifyTokenMiddleware) {
 
       const uid = req.user.uid;
 
-      // 1. Push to Redis (trending + stream + user recent)
       const redisOk = await pushActivity(uid, book_id, action);
 
-      // 2. Forward to FastAPI /activity so that FastAPI also updates its cache
       proxyToAI('POST', '/activity', {
         user_id: uid,
         book_id: String(book_id),
@@ -173,16 +190,18 @@ function createRecommendationsRoutes(verifyTokenMiddleware) {
     '/cold-start',
     verifyTokenMiddleware,
     asyncHandler(async (req, res) => {
-      const { top_n = 10 } = req.query;
-
-      // Use user survey if available
+      const { top_n = 10, language } = req.query;
       const surveyCtx = await getUserSurveyContext(req.user.uid);
-      const language  = surveyCtx.genre_pref === 'id' ? 'id' : undefined;
-
+      
       const params = new URLSearchParams({ n: top_n });
       if (language) params.set('language', language);
+      
+      // ✅ TAMBAHAN BARU: Kirim survey ke query params FastAPI
+      if (surveyCtx.user_gender) params.set('gender', surveyCtx.user_gender);
+      if (surveyCtx.user_age_group) params.set('age_group', surveyCtx.user_age_group);
+      if (surveyCtx.preferred_genres) params.set('genres', surveyCtx.preferred_genres.join(','));
 
-      const result = await proxyToAI('GET', `/recommendations/cold-start?${params}`);
+      const result = await proxyToAI('GET', `/recommendations/cold-start?${params.toString()}`);
       res.json({ success: true, data: result });
     })
   );
@@ -193,7 +212,15 @@ function createRecommendationsRoutes(verifyTokenMiddleware) {
     verifyTokenMiddleware,
     asyncHandler(async (req, res) => {
       const { top_n = 10 } = req.query;
-      const result = await proxyToAI('GET', `/recommendations/trending?n=${top_n}`);
+      const surveyCtx = await getUserSurveyContext(req.user.uid);
+
+      const params = new URLSearchParams({ n: top_n });
+      
+      // ✅ TAMBAHAN BARU: Kirim survey buat trending blend Model C
+      if (surveyCtx.user_gender) params.set('gender', surveyCtx.user_gender);
+      if (surveyCtx.user_age_group) params.set('age_group', surveyCtx.user_age_group);
+
+      const result = await proxyToAI('GET', `/recommendations/trending?${params.toString()}`);
       res.json({ success: true, data: result });
     })
   );

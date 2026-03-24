@@ -1,190 +1,144 @@
 /**
  * User Survey Service - Database Operations
- * Handles CRUD operations untuk user survey data di Azure SQL
+ * Handles CRUD operations untuk user survey data di Azure SQL & Neon (Dummy)
  */
 
-const { getPool } = require('../config/database');
+const { executeQuery, isDummy } = require('../config/database');
 const UserService = require('./userService');
 
 class UserSurveyService {
   /**
    * Save survey response untuk user
-   * @param {string} uid - Firebase UID
-   * @param {Object} surveyData - Survey responses
-   * @returns {Promise<Object>} - Created survey atau error
    */
   static async saveSurvey(uid, surveyData) {
     try {
-      const pool = getPool();
-      
-      // Get user first
-      let userResult = await UserService.getUserByUid(uid);
-      
-      if (!userResult.data) {
-        return {
-          success: false,
-          error: 'User not found in database. Please ensure you are logged in.',
-        };
+      const userResult = await UserService.getUserByUid(uid);
+      if (!userResult.success || !userResult.data) {
+        return { success: false, error: 'User not found in database. Please ensure you are logged in.' };
       }
-
       const userId = userResult.data.id;
 
-      // Check if survey already exists
-      const checkQuery = `SELECT * FROM UserSurvey WHERE userId = @userId`;
-      const checkResult = await pool.request()
-        .input('userId', userId)
-        .query(checkQuery);
+      const { gender, age, favoriteGenre } = surveyData;
+      const favoriteGenreStr = Array.isArray(favoriteGenre) ? favoriteGenre.join(', ') : favoriteGenre;
+      
+      let query = '';
 
-      if (checkResult.recordset.length > 0) {
-        // Update existing survey
-        return this.updateSurvey(userId, surveyData);
+      if (isDummy) {
+        query = `
+          INSERT INTO UserSurvey (userId, gender, age, favoriteGenre) 
+          VALUES ($1, $2, $3, $4)
+          ON CONFLICT (userId) DO UPDATE 
+          SET gender = EXCLUDED.gender, 
+              age = EXCLUDED.age, 
+              favoriteGenre = EXCLUDED.favoriteGenre, 
+              updatedAt = NOW()
+        `;
+      } else {
+        query = `
+          MERGE UserSurvey AS target
+          USING (SELECT $1 AS userId, $2 AS gender, $3 AS age, $4 AS favoriteGenre) AS source
+          ON (target.userId = source.userId)
+          WHEN MATCHED THEN
+              UPDATE SET gender = source.gender, age = source.age, favoriteGenre = source.favoriteGenre, updatedAt = GETDATE()
+          WHEN NOT MATCHED THEN
+              INSERT (userId, gender, age, favoriteGenre) VALUES (source.userId, source.gender, source.age, source.favoriteGenre);
+        `;
       }
 
-      // Insert new survey
-      const query = `
-        INSERT INTO UserSurvey (userId, favoriteGenre, age, gender)
-        VALUES (@userId, @favoriteGenre, @age, @gender);
-        SELECT * FROM UserSurvey WHERE userId = @userId;
-      `;
+      await executeQuery(query, [userId, gender, age, favoriteGenreStr]);
 
-      const result = await pool
-        .request()
-        .input('userId', userId)
-        .input('favoriteGenre', surveyData.favoriteGenre || null)
-        .input('age', surveyData.age || null)
-        .input('gender', surveyData.gender || null)
-        .query(query);
-
-      return {
-        success: true,
-        data: result.recordset[0],
-      };
+      return { success: true, message: 'Survey saved successfully' };
     } catch (error) {
       console.error('Error saving survey:', error);
-      return {
-        success: false,
-        error: error.message,
-      };
+      return { success: false, error: error.message };
     }
   }
 
   /**
    * Get user survey by UID
-   * @param {string} uid - Firebase UID
-   * @returns {Promise<Object>} - Survey data atau null
    */
   static async getSurveyByUid(uid) {
     try {
-      const pool = getPool();
+      const userCol = isDummy ? 'firebase_uid' : 'uid';
+      const userTable = isDummy ? 'users' : 'Users';
       
       const query = `
         SELECT us.* FROM UserSurvey us
-        JOIN Users u ON us.userId = u.id
-        WHERE u.uid = @uid
+        JOIN ${userTable} u ON us.userId = u.id
+        WHERE u.${userCol} = $1
       `;
 
-      const result = await pool
-        .request()
-        .input('uid', uid)
-        .query(query);
-
-      return {
-        success: true,
-        data: result.recordset[0] || null,
-      };
+      const rows = await executeQuery(query, [uid]);
+      return { success: true, data: rows[0] || null };
     } catch (error) {
       console.error('Error getting survey:', error);
-      return {
-        success: false,
-        error: error.message,
-      };
+      return { success: false, error: error.message };
     }
   }
 
   /**
    * Update survey
-   * @param {number} userId - User ID
-   * @param {Object} updates - Survey updates
-   * @returns {Promise<Object>} - Updated survey atau error
    */
   static async updateSurvey(userId, updates) {
     try {
-      const pool = getPool();
-      
       const allowedFields = ['favoriteGenre', 'age', 'gender'];
+      const fields = Object.keys(updates).filter(k => allowedFields.includes(k));
       
-      let setClause = [];
-      const request = pool.request().input('userId', userId);
-      
-      for (const [key, value] of Object.entries(updates)) {
-        if (allowedFields.includes(key)) {
-          setClause.push(`${key} = @${key}`);
-          request.input(key, value || null);
-        }
+      if (fields.length === 0) {
+        return { success: false, error: 'No valid fields to update' };
       }
 
-      if (setClause.length === 0) {
-        return {
-          success: false,
-          error: 'No valid fields to update',
-        };
+      const setClause = fields.map((f, i) => `${f} = $${i + 2}`).join(', ');
+      const values = [userId, ...fields.map(f => updates[f])];
+      const timeFunc = isDummy ? 'NOW()' : 'GETDATE()';
+      
+      let query = '';
+
+      if (isDummy) {
+        query = `
+          UPDATE UserSurvey
+          SET ${setClause}, updatedAt = ${timeFunc}
+          WHERE userId = $1
+          RETURNING *
+        `;
+      } else {
+        query = `
+          UPDATE UserSurvey
+          SET ${setClause}, updatedAt = ${timeFunc}
+          WHERE userId = $1;
+          SELECT * FROM UserSurvey WHERE userId = $1;
+        `;
       }
 
-      setClause.push('updatedAt = GETDATE()');
-
-      const query = `
-        UPDATE UserSurvey
-        SET ${setClause.join(', ')}
-        WHERE userId = @userId;
-        SELECT * FROM UserSurvey WHERE userId = @userId;
-      `;
-
-      const result = await request.query(query);
-
-      return {
-        success: true,
-        data: result.recordset[0],
-      };
+      const rows = await executeQuery(query, values);
+      return { success: true, data: rows[0] };
     } catch (error) {
       console.error('Error updating survey:', error);
-      return {
-        success: false,
-        error: error.message,
-      };
+      return { success: false, error: error.message };
     }
   }
 
   /**
    * Get user with survey data
-   * @param {string} uid - Firebase UID
-   * @returns {Promise<Object>} - Combined user + survey data
    */
   static async getUserWithSurvey(uid) {
     try {
-      const pool = getPool();
+      const userCol = isDummy ? 'firebase_uid' : 'uid';
+      const userTable = isDummy ? 'users' : 'Users';
       
+      // Ambil detail survey yang relevan sesuai skema
       const query = `
-        SELECT u.*, us.favoriteGenre, us.readingLevel, us.preferredLanguage
-        FROM Users u
+        SELECT u.*, us.favoriteGenre, us.age, us.gender
+        FROM ${userTable} u
         LEFT JOIN UserSurvey us ON u.id = us.userId
-        WHERE u.uid = @uid
+        WHERE u.${userCol} = $1
       `;
 
-      const result = await pool
-        .request()
-        .input('uid', uid)
-        .query(query);
-
-      return {
-        success: true,
-        data: result.recordset[0] || null,
-      };
+      const rows = await executeQuery(query, [uid]);
+      return { success: true, data: rows[0] || null };
     } catch (error) {
       console.error('Error getting user with survey:', error);
-      return {
-        success: false,
-        error: error.message,
-      };
+      return { success: false, error: error.message };
     }
   }
 }
