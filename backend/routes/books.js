@@ -5,8 +5,8 @@ function createBooksRoutes(verifyTokenMiddleware) {
   const router = express.Router();
 
   router.get('/', getAllBooks);
-  router.get('/:id', verifyTokenMiddleware, getBookById);
-
+  router.get('/:id', getBookById);
+  router.post('/:id/interact', verifyTokenMiddleware, interactWithBook);
   return router;
 }
 
