@@ -3,6 +3,7 @@
  */
 
 const { Redis } = require('@upstash/redis');
+const { executeQuery, isDummy } = require('../config/database');
 
 let redis = null;
 
@@ -27,7 +28,55 @@ function getRedisClient() {
   }
 }
 
-const ACTION_WEIGHTS = { view: 1, read: 3, like: 5, bookmark: 4, share: 2, review: 8 };
+const ACTION_WEIGHTS = { view: 1, read: 3, like: 5, bookmark: 4, wishlist: 4, share: 2, review: 8 };
+const BOOK_REF_CACHE = new Map();
+const ACTIVITY_STREAM_TTL_SECONDS = Number(process.env.REDIS_ACTIVITY_STREAM_TTL_SECONDS || (8 * 24 * 3600));
+
+async function resolveCanonicalBookId(bookRef) {
+  if (!bookRef) return null;
+  const key = String(bookRef).trim();
+  if (!key) return null;
+  if (BOOK_REF_CACHE.has(key)) return BOOK_REF_CACHE.get(key);
+
+  try {
+    if (isDummy) {
+      const byId = await executeQuery('SELECT id::text AS id FROM books WHERE id::text = $1 LIMIT 1', [key]);
+      if (byId.length > 0) {
+        BOOK_REF_CACHE.set(key, byId[0].id);
+        return byId[0].id;
+      }
+
+      const byExternal = await executeQuery('SELECT id::text AS id FROM books WHERE lower(external_key) = lower($1) LIMIT 1', [key]);
+      if (byExternal.length > 0) {
+        BOOK_REF_CACHE.set(key, byExternal[0].id);
+        return byExternal[0].id;
+      }
+
+      const byTitle = await executeQuery('SELECT id::text AS id FROM books WHERE lower(title) = lower($1) LIMIT 1', [key]);
+      if (byTitle.length > 0) {
+        BOOK_REF_CACHE.set(key, byTitle[0].id);
+        return byTitle[0].id;
+      }
+    } else {
+      const byId = await executeQuery('SELECT CAST(id AS NVARCHAR(255)) AS id FROM books WHERE CAST(id AS NVARCHAR(255)) = $1', [key]);
+      if (byId.length > 0) {
+        BOOK_REF_CACHE.set(key, byId[0].id);
+        return byId[0].id;
+      }
+
+      const byTitle = await executeQuery('SELECT TOP 1 CAST(id AS NVARCHAR(255)) AS id FROM books WHERE LOWER(title) = LOWER($1)', [key]);
+      if (byTitle.length > 0) {
+        BOOK_REF_CACHE.set(key, byTitle[0].id);
+        return byTitle[0].id;
+      }
+    }
+  } catch (err) {
+    console.warn('[Redis] resolveCanonicalBookId warning:', err.message);
+  }
+
+  BOOK_REF_CACHE.set(key, null);
+  return null;
+}
 
 /**
  * Push user activity to Redis (Stream + Trending + cache invalidation).
@@ -40,21 +89,42 @@ async function pushActivity(userId, bookId, action) {
   const weight = ACTION_WEIGHTS[action] || 1;
 
   try {
+    const canonicalBookId = await resolveCanonicalBookId(bookId);
+    const normalizedBookId = String(canonicalBookId || bookId);
+    const ts = Date.now();
+
     // 1. Activity stream — for social signal in FastAPI
-    await r.xadd('activity:stream', '*', {
-      user_id: userId,
-      book_id: String(bookId),
-      action,
-      ts: Date.now().toString(),
-    });
+    if (typeof r.xadd === 'function') {
+      await r.xadd(
+        'activity:stream',
+        '*',
+        {
+          user_id: String(userId),
+          book_id: normalizedBookId,
+          action: String(action),
+          ts: String(ts),
+        },
+        {
+          trim: {
+            type: 'MAXLEN',
+            threshold: 100000,
+            comparison: '~',
+          },
+        }
+      );
+    } else {
+      // Legacy fallback for older clients.
+      await r.lpush('activity:stream', `${userId}:${normalizedBookId}:${action}`);
+    }
+    await r.expire('activity:stream', ACTIVITY_STREAM_TTL_SECONDS);
 
     // 2. Trending sorted set
-    await r.zincrby('trending:books:7d', weight, String(bookId));
+    await r.zincrby('trending:books:7d', weight, normalizedBookId);
     await r.expire('trending:books:7d', 8 * 24 * 3600); // 8 hari
 
     // 3. Save in the per-user recent list (max 50 entries, for AI context)
     const userKey = `user:recent:${userId}`;
-    await r.lpush(userKey, String(bookId));
+    await r.lpush(userKey, normalizedBookId);
     await r.ltrim(userKey, 0, 49); // keep last 50
     await r.expire(userKey, 30 * 24 * 3600); // 30 days
 

@@ -23,7 +23,7 @@ const { createVerifyTokenMiddleware, createOptionalVerifyTokenMiddleware } = req
 const { createAuthRoutes } = require("./routes/auth");
 const createSurveyRoutes = require("./routes/survey");
 const { initializeDatabase, createUsersTable, createUserSurveyTable } = require("./config/database");
-const { getAllBooks, getBookById } = require('./controllers/bookController');
+const { getAllBooks, getBookById, interactWithBook } = require('./controllers/bookController');
 
 // Routes
 const createRecommendationsRoutes = require('./routes/recommendations');
@@ -50,7 +50,7 @@ app.use((req, res, next) => {
 // Middleware
 app.use(express.json());
 app.use(cors({
-  origin: CONFIG.CORS_ORIGIN || "http://localhost:3001",
+  origin: CONFIG.CORS_ORIGINS || "http://localhost:3001",
   methods: ["GET", "POST", "PUT", "DELETE"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,
@@ -83,11 +83,15 @@ app.get("/api/protected", verifyTokenMiddleware, (req, res) => {
 });
 
 // Recommendations Routes
-app.use('/recommendations', createRecommendationsRoutes(verifyTokenMiddleware));
+app.use('/recommendations', createRecommendationsRoutes(verifyTokenMiddleware, optionalVerifyTokenMiddleware));
 
 // Books Routes
 app.get('/books', getAllBooks);
 app.get('/books/:id', optionalVerifyTokenMiddleware, getBookById);
+app.post('/books/:id/interact', verifyTokenMiddleware, interactWithBook);
+
+// Cron Routes
+app.use('/cron', require('./routes/cronRoutes'));
 
 // ==========================================
 // ERROR HANDLING

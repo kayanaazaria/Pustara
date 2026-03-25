@@ -23,7 +23,6 @@ const getBookById = async (req, res) => {
 
     const book = books[0];
 
-    // track 'view' interaction to redis (if authenticated)
     if (req.user && req.user.uid) {
       try {
         // push view activity to Redis, but make sure Redis errors do not interfere with the main response
@@ -41,7 +40,33 @@ const getBookById = async (req, res) => {
   }
 };
 
+const interactWithBook = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { action } = req.body; // e.g., 'like', 'add_to_list', etc.
+    if (!req.user || !req.user.uid) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const validActions = ['view', 'like', 'read', 'share', 'review', 'wishlist', 'bookmark'];
+    if (!validActions.includes(action)) {
+      return res.status(400).json({ success: false, message: 'Invalid action' });
+    }
+
+    const normalizedAction = action === 'bookmark' ? 'wishlist' : action;
+
+    // Log the book interaction to Redis
+    await logBookInteraction(req.user.uid, id, normalizedAction);
+
+    res.status(200).json({ success: true, message: `Interaction '${normalizedAction}' for book ${id} logged successfully` });
+  } catch (error) {
+    console.error('❌ Error interacting with book:', error);
+    res.status(500).json({ success: false, message: 'Error interacting with book' });
+  }
+};
+
 module.exports = {
   getAllBooks,
-  getBookById
+  getBookById,
+  interactWithBook
 };

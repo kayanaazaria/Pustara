@@ -31,8 +31,11 @@ class UserService {
       } else {
         // Azure SQL
         rows = await executeQuery(`
-          INSERT INTO Users (uid, email, displayName)
-          VALUES ($1, $2, $3);
+          IF NOT EXISTS (SELECT 1 FROM Users WHERE uid = $1)
+          BEGIN
+            INSERT INTO Users (uid, email, displayName)
+            VALUES ($1, $2, $3);
+          END
           SELECT * FROM Users WHERE uid = $1;
         `, [uid, email, displayName || email.split('@')[0]]);
       }

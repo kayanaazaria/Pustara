@@ -1,10 +1,6 @@
 /**
  * Recommendations Routes
  * Proxy to FastAPI AI server on Hugging Face.
- * * Improvements:
- * - Send user_gender, user_age, context (last_book_id, recent_books) to FastAPI
- * - Track every recommendation interaction to Redis via pushActivity
- * - Fetch user survey before calling AI to make recommendations more personalized
  */
 
 const express = require('express');
@@ -12,6 +8,118 @@ const { pushActivity, getUserRecentBooks } = require('../services/redis');
 const UserSurveyService = require('../services/userSurveyService');
 
 const getAiUrl = () => process.env.FASTAPI_URL || 'http://localhost:8001';
+
+function toFiniteNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeSignal(signal, fallbackLabel, fallbackWeight) {
+  return {
+    score: toFiniteNumber(signal?.score, 0),
+    weight: toFiniteNumber(signal?.weight, fallbackWeight),
+    label: signal?.label || fallbackLabel,
+  };
+}
+
+function signalScoreFromArray(arr, token) {
+  if (!Array.isArray(arr)) return undefined;
+  const found = arr.find((item) => {
+    const label = String(item?.label || '').toLowerCase();
+    return label.includes(token);
+  });
+  return found ? toFiniteNumber(found.value, undefined) : undefined;
+}
+
+function normalizeRecommendation(rec = {}) {
+  const signalMap = rec?.signals_map || rec?.signals || {};
+  const contentScoreRaw =
+    signalMap?.content?.score ?? signalScoreFromArray(rec?.signals, 'konten') ?? signalScoreFromArray(rec?.signals, 'content');
+  const collabScoreRaw =
+    signalMap?.collab?.score ?? signalScoreFromArray(rec?.signals, 'collab') ?? signalScoreFromArray(rec?.signals, 'komunitas');
+
+  const contentScore = Math.min(1, Math.max(0, toFiniteNumber(contentScoreRaw, 0)));
+  const collabScore = Math.min(1, Math.max(0, toFiniteNumber(collabScoreRaw, 0)));
+  const hybridScore = Math.min(1, Math.max(0, toFiniteNumber(rec.hybrid_score ?? rec.final_score, 0)));
+  const dominant = rec.dominant_signal === 'collab'
+    ? 'collab'
+    : rec.dominant_signal === 'content'
+      ? 'content'
+      : collabScore > contentScore
+        ? 'collab'
+        : 'content';
+
+  return {
+    book_id: String(rec.book_id || rec.id || ''),
+    title: rec.title || 'Untitled',
+    authors: rec.authors || rec.author || 'Unknown Author',
+    avg_rating: toFiniteNumber(rec.avg_rating, 0),
+    reason_primary: rec.reason_primary || 'Rekomendasi dari PustarAI',
+    reason_secondary: rec.reason_secondary ?? null,
+    dominant_signal: dominant,
+    hybrid_score: hybridScore,
+    phase: rec.phase || '❄️ Cold',
+    signals: {
+      content: normalizeSignal(
+        signalMap?.content,
+        'Kemiripan konten',
+        1,
+      ),
+      collab: normalizeSignal(
+        signalMap?.collab,
+        'Sinyal komunitas',
+        0,
+      ),
+    },
+  };
+}
+
+function normalizeRecommendationsPayload(result = {}) {
+  const recommendations = Array.isArray(result.recommendations)
+    ? result.recommendations.map(normalizeRecommendation)
+    : [];
+
+  return {
+    ...result,
+    recommendations,
+    show_recommendations:
+      typeof result.show_recommendations === 'boolean'
+        ? result.show_recommendations
+        : recommendations.length > 0,
+  };
+}
+
+function normalizeTrendingPayload(result = {}) {
+  const source = Array.isArray(result.trending)
+    ? result.trending
+    : Array.isArray(result.recommendations)
+      ? result.recommendations
+      : [];
+
+  const trending = source.map((book) => ({
+    book_id: String(book.book_id || book.id || ''),
+    title: book.title || 'Untitled',
+    authors: book.authors || book.author || 'Unknown Author',
+    genres: Array.isArray(book.genres)
+      ? book.genres
+      : typeof book.genres === 'string'
+        ? book.genres.split(',').map((g) => g.trim()).filter(Boolean)
+        : [],
+    description: typeof book.description === 'string' ? book.description : '',
+    year: book.year ? String(book.year) : '',
+    pages: toFiniteNumber(book.pages, 0),
+    avg_rating: toFiniteNumber(book.avg_rating, 0),
+    cover_url: book.cover_url || null,
+    trending_score: toFiniteNumber(book.trending_score ?? book.score, 0),
+    reason_primary: book.reason_primary || 'Trending di Pustara',
+  }));
+
+  return {
+    ...result,
+    trending,
+    recommendations: trending,
+  };
+}
 
 const asyncHandler = fn => (req, res, next) =>
   Promise.resolve(fn(req, res, next)).catch(err => {
@@ -44,16 +152,34 @@ async function proxyToAI(method, path, body = null) {
 
 /**
  * Fetch user survey data (gender, age, genre pref) from the DB.
- * Graceful fallback — if it fails, return {} so the process continues.
  */
 async function getUserSurveyContext(uid) {
   try {
     const result = await UserSurveyService.getSurveyByUid(uid);
     if (result.success && result.data) {
+      let ageGroup = null;
+      const exactAge = parseInt(result.data.age);
+      if (!isNaN(exactAge)) {
+        if (exactAge < 20) ageGroup = "<20";
+        else if (exactAge <= 30) ageGroup = "21-30";
+        else if (exactAge <= 40) ageGroup = "31-40";
+        else ageGroup = ">40";
+      } else {
+        ageGroup = result.data.age; 
+      }
+
+      let genresArray = [];
+      if (typeof result.data.favoriteGenre === 'string') {
+        genresArray = result.data.favoriteGenre.split(',').map(g => g.trim());
+      } else if (Array.isArray(result.data.favoriteGenre)) {
+        genresArray = result.data.favoriteGenre;
+      }
+
       return {
-        user_gender: result.data.gender      || null,
-        user_age:    result.data.age         || null,
-        genre_pref:  result.data.favoriteGenre || null,
+        user_gender:      result.data.gender || null, // "L", "P", "X"
+        user_age:         result.data.age ? String(result.data.age) : null,
+        user_age_group:   ageGroup,
+        preferred_genres: genresArray.length > 0 ? genresArray : null,
       };
     }
   } catch (e) {
@@ -62,7 +188,7 @@ async function getUserSurveyContext(uid) {
   return {};
 }
 
-function createRecommendationsRoutes(verifyTokenMiddleware) {
+function createRecommendationsRoutes(verifyTokenMiddleware, optionalVerifyTokenMiddleware = (req, _res, next) => next()) {
   const router = express.Router();
 
   // ── POST /recommendations/chat ────────────────────────────────────────────
@@ -84,7 +210,6 @@ function createRecommendationsRoutes(verifyTokenMiddleware) {
 
       const uid = req.user.uid;
 
-      // Fetch survey + recent books in parallel
       const [surveyCtx, recentBooks] = await Promise.all([
         getUserSurveyContext(uid),
         getUserRecentBooks(uid, 10),
@@ -92,26 +217,29 @@ function createRecommendationsRoutes(verifyTokenMiddleware) {
 
       const result = await proxyToAI('POST', '/recommendations/chat', {
         message:             query,
+        query,
         user_id:             uid,
         n:                   top_n,
+        top_n,
         attached_book_title: attached_book_title || null,
         attached_book_desc:  attached_book_desc  || null,
         user_gender:         surveyCtx.user_gender,
         user_age:            surveyCtx.user_age,
-        chat_history:        req.body.chat_history || [],   // ← forward history from FE
+        user_age_group:      surveyCtx.user_age_group,
+        preferred_genres:    surveyCtx.preferred_genres, 
+        chat_history:        req.body.chat_history || [],
         context: {
           ...clientContext,
-          genre_pref:   surveyCtx.genre_pref,
+          genre_pref:   surveyCtx.preferred_genres ? surveyCtx.preferred_genres.join(',') : null,
           recent_books: recentBooks,
         },
       });
 
-      res.json({ success: true, data: result });
+      res.json({ success: true, data: normalizeRecommendationsPayload(result) });
     })
   );
 
   // ── POST /recommendations/direct ──────────────────────────────────────────
-  // Called from the book detail page → "You might also like"
   router.post(
     '/direct',
     verifyTokenMiddleware,
@@ -121,23 +249,26 @@ function createRecommendationsRoutes(verifyTokenMiddleware) {
       if (!bid) return res.status(400).json({ success: false, error: 'book_id is required' });
 
       const uid = req.user.uid;
-
-      // Track that the user viewed recommendations from this book (weak signal)
       pushActivity(uid, bid, 'view').catch(() => {});
 
+      const surveyCtx = await getUserSurveyContext(uid);
+
       const result = await proxyToAI('POST', '/recommendations/direct', {
-        book_id:  bid,
-        user_id:  uid,
-        n:        top_n,
+        book_id:          bid,
+        seed_title:       bid,
+        user_id:          uid,
+        n:                top_n,
+        top_n,
+        user_gender:      surveyCtx.user_gender,
+        user_age_group:   surveyCtx.user_age_group,
+        preferred_genres: surveyCtx.preferred_genres
       });
 
-      res.json({ success: true, data: result });
+      res.json({ success: true, data: normalizeRecommendationsPayload(result) });
     })
   );
 
   // ── POST /recommendations/activity ────────────────────────────────────────
-  // New endpoint — FE calls this whenever a user interacts with a book
-  // (view, read, like, bookmark, share, review)
   router.post(
     '/activity',
     verifyTokenMiddleware,
@@ -154,10 +285,8 @@ function createRecommendationsRoutes(verifyTokenMiddleware) {
 
       const uid = req.user.uid;
 
-      // 1. Push to Redis (trending + stream + user recent)
       const redisOk = await pushActivity(uid, book_id, action);
 
-      // 2. Forward to FastAPI /activity so that FastAPI also updates its cache
       proxyToAI('POST', '/activity', {
         user_id: uid,
         book_id: String(book_id),
@@ -173,28 +302,37 @@ function createRecommendationsRoutes(verifyTokenMiddleware) {
     '/cold-start',
     verifyTokenMiddleware,
     asyncHandler(async (req, res) => {
-      const { top_n = 10 } = req.query;
-
-      // Use user survey if available
+      const { top_n = 10, language } = req.query;
       const surveyCtx = await getUserSurveyContext(req.user.uid);
-      const language  = surveyCtx.genre_pref === 'id' ? 'id' : undefined;
-
-      const params = new URLSearchParams({ n: top_n });
+      
+      const params = new URLSearchParams({ n: top_n, top_n: top_n });
       if (language) params.set('language', language);
+      
+      if (surveyCtx.user_gender) params.set('gender', surveyCtx.user_gender);
+      if (surveyCtx.user_age_group) params.set('age_group', surveyCtx.user_age_group);
+      if (surveyCtx.preferred_genres) params.set('genres', surveyCtx.preferred_genres.join(','));
 
-      const result = await proxyToAI('GET', `/recommendations/cold-start?${params}`);
-      res.json({ success: true, data: result });
+      const result = await proxyToAI('GET', `/recommendations/cold-start?${params.toString()}`);
+      res.json({ success: true, data: normalizeRecommendationsPayload(result) });
     })
   );
 
   // ── GET /recommendations/trending ─────────────────────────────────────────
   router.get(
     '/trending',
-    verifyTokenMiddleware,
+    optionalVerifyTokenMiddleware,
     asyncHandler(async (req, res) => {
       const { top_n = 10 } = req.query;
-      const result = await proxyToAI('GET', `/recommendations/trending?n=${top_n}`);
-      res.json({ success: true, data: result });
+      const uid = req.user?.uid;
+      const surveyCtx = uid ? await getUserSurveyContext(uid) : {};
+
+      const params = new URLSearchParams({ n: top_n, top_n: top_n });
+      
+      if (surveyCtx.user_gender) params.set('gender', surveyCtx.user_gender);
+      if (surveyCtx.user_age_group) params.set('age_group', surveyCtx.user_age_group);
+
+      const result = await proxyToAI('GET', `/recommendations/trending?${params.toString()}`);
+      res.json({ success: true, data: normalizeTrendingPayload(result) });
     })
   );
 

@@ -7,6 +7,11 @@ const CONFIG = {
   PORT: process.env.PORT || 3000,
   NODE_ENV: process.env.NODE_ENV || "development",
 
+  // CORS
+  CORS_ORIGINS: process.env.CORS_ORIGINS 
+    ? process.env.CORS_ORIGINS.split(",").map(origin => origin.trim()) 
+    : ["http://localhost:3001"],
+    
   // Firebase
   FIREBASE_PROJECT_ID: process.env.FIREBASE_PROJECT_ID,
   FIREBASE_API_KEY: process.env.FIREBASE_API_KEY,
