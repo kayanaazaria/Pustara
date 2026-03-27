@@ -145,37 +145,67 @@ exports.downloadBookFile = async (req, res) => {
 // POST /books - Admin: Create new book (dengan file upload)
 exports.createBook = async (req, res) => {
   try {
-    const { title, authors, genres, description, year, pages, language } = req.body;
+    const { title, description, year, pages, language } = req.body;
+    let { authors, genres } = req.body;
     const file = req.files?.bookFile;
 
-    if (!title || !authors || !genres) {
-      return res.status(400).json({ success: false, message: 'Missing required fields' });
+    // Validation
+    if (!title) {
+      return res.status(400).json({ success: false, message: 'Title is required' });
+    }
+
+    // Parse authors - accept string or array
+    if (typeof authors === 'string') {
+      authors = authors.split(',').map(a => a.trim()).filter(a => a);
+    }
+    if (!Array.isArray(authors) || authors.length === 0) {
+      return res.status(400).json({ success: false, message: 'Authors is required (comma-separated or array)' });
+    }
+
+    // Parse genres - accept string or array
+    if (typeof genres === 'string') {
+      genres = genres.split(',').map(g => g.trim()).filter(g => g);
+    }
+    if (!Array.isArray(genres) || genres.length === 0) {
+      return res.status(400).json({ success: false, message: 'Genres is required (comma-separated or array)' });
     }
 
     let fileUrl = null;
     let fileSize = null;
-    const fileType = file?.mimetype || 'application/pdf';
+    let fileType = 'application/pdf';
 
     // Upload file to Azure Blob jika ada
     if (file) {
-      const fileName = `${uuidv4()}-${file.name}`;
-      fileUrl = await azureBlob.uploadFile(fileName, file.data, fileType);
-      fileSize = file.size;
+      if (!['application/pdf', 'application/x-pdf'].includes(file.mimetype)) {
+        return res.status(400).json({ success: false, message: 'Only PDF files are allowed' });
+      }
+
+      fileType = file.mimetype;
+      const fileName = `${uuidv4()}-${Date.now()}.pdf`;
+      
+      try {
+        fileUrl = await azureBlob.uploadFile(fileName, file.data, fileType);
+        fileSize = file.size;
+      } catch (uploadError) {
+        console.error('Azure upload error:', uploadError.message);
+        return res.status(500).json({ success: false, message: 'Failed to upload file to storage' });
+      }
     }
 
+    const pool = require('../config/database').getPool();
     const query = `
-      INSERT INTO books (title, authors, genres, description, "year", pages, language, file_url, file_size, file_type)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      INSERT INTO books (title, authors, genres, description, "year", pages, language, file_url, file_size, file_type, is_active)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)
       RETURNING *
     `;
 
-    const result = await db.executeQuery(query, [
+    const result = await pool.query(query, [
       title,
-      authors, // array
-      genres,  // array
-      description,
-      year,
-      pages,
+      authors,
+      genres,
+      description || null,
+      year ? parseInt(year) : null,
+      pages ? parseInt(pages) : null,
       language || 'id',
       fileUrl,
       fileSize,

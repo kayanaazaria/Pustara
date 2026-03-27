@@ -9,9 +9,9 @@ router.get('/books/search', booksController.searchBooks);
 router.get('/books/:id', booksController.getBookDetail);
 router.get('/books/:id/file', booksController.downloadBookFile);
 
-// TODO: Admin routes (POST, PUT, DELETE) - akan di-implement setelah auth structure more stable
-// router.post('/books', authenticateAdmin, booksController.createBook);
-// router.put('/books/:id', authenticateAdmin, booksController.updateBook);
-// router.delete('/books/:id', authenticateAdmin, booksController.deleteBook);
+// Admin routes will be mounted separately with auth middleware in index.js
+// router.post('/books', authorizeAdmin, booksController.createBook);
+// router.put('/books/:id', authorizeAdmin, booksController.updateBook);
+// router.delete('/books/:id', authorizeAdmin, booksController.deleteBook);
 
 module.exports = router;

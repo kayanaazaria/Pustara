@@ -23,10 +23,12 @@ console.log(`🔐 NODE_ENV: ${process.env.NODE_ENV || 'not set'}`);
 
 const express = require("express");
 const cors = require("cors");
+const fileUpload = require("express-fileupload");
 const CONFIG = require("./constants/config");
 const FirebaseProvider = require("./providers/firebaseProvider");
 const AuthService = require("./services/authService");
 const { createVerifyTokenMiddleware, createOptionalVerifyTokenMiddleware } = require("./middleware/auth");
+const { authorizeAdmin } = require("./middleware/adminAuth");
 const { createAuthRoutes } = require("./routes/auth");
 const createSurveyRoutes = require("./routes/survey");
 const { initializeDatabase, createUsersTable, createUserSurveyTable } = require("./config/database");
@@ -34,7 +36,9 @@ const { initializeDatabase, createUsersTable, createUserSurveyTable } = require(
 // Routes
 const createRecommendationsRoutes = require('./routes/recommendations');
 const booksRoutes = require('./routes/booksRoutes');
+const booksAdminRoutes = require('./routes/booksAdminRoutes');
 const readingSessionRoutes = require('./routes/readingSessionRoutes');
+const analyticsRoutes = require('./routes/analyticsRoutes');
 
 require('./jobs/cron'); //init cron jobs for ai-related tasks
 
@@ -57,6 +61,13 @@ app.use((req, res, next) => {
 
 // Middleware
 app.use(express.json());
+app.use(fileUpload({
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max
+  abortOnLimit: true,
+  responseOnLimit: 'File size too large (max 50MB)',
+  useTempFiles: true,
+  tempFileDir: '/tmp/',
+}));
 app.use(cors({
   origin: CONFIG.CORS_ORIGINS || "http://localhost:3001",
   methods: ["GET", "POST", "PUT", "DELETE"],
@@ -96,8 +107,14 @@ app.use('/recommendations', createRecommendationsRoutes(verifyTokenMiddleware, o
 // Books Routes (dengan Azure Blob file handling)
 app.use('/', booksRoutes);
 
+// Books Admin Routes (protected by verifyToken + authorizeAdmin)
+app.use('/', verifyTokenMiddleware, authorizeAdmin, booksAdminRoutes);
+
 // Reading Session Routes (track user reading progress)
 app.use('/reading', verifyTokenMiddleware, readingSessionRoutes);
+
+// Analytics Routes (stats & dashboard)
+app.use('/stats', analyticsRoutes);
 
 // Cron Routes
 app.use('/cron', require('./routes/cronRoutes'));
