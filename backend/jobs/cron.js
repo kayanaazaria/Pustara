@@ -246,9 +246,9 @@ cron.schedule('0 */6 * * *', async () => {
 }, { timezone: 'Asia/Jakarta' });
 
 // ─────────────────────────────────────────────────────────────
-// Job 3: Sync Redis activity → Neon/Azure — every 10 minutes
+// Job 3: Sync Redis activity → Neon/Azure — every 6 hours
 // ─────────────────────────────────────────────────────────────
-cron.schedule('*/10 * * * *', async () => {
+cron.schedule('0 */6 * * *', async () => {
   log('SYNC', 'Synchronize Redis scores to Database...');
   try {
     let activities = [];
