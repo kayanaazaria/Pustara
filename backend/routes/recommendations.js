@@ -53,6 +53,7 @@ function normalizeRecommendation(rec = {}) {
     book_id: String(rec.book_id || rec.id || ''),
     title: rec.title || 'Untitled',
     authors: rec.authors || rec.author || 'Unknown Author',
+    cover_url: rec.cover_url || null,
     avg_rating: toFiniteNumber(rec.avg_rating, 0),
     reason_primary: rec.reason_primary || 'Rekomendasi dari PustarAI',
     reason_secondary: rec.reason_secondary ?? null,
@@ -242,27 +243,34 @@ function createRecommendationsRoutes(verifyTokenMiddleware, optionalVerifyTokenM
   // ── POST /recommendations/direct ──────────────────────────────────────────
   router.post(
     '/direct',
-    verifyTokenMiddleware,
+    optionalVerifyTokenMiddleware,
     asyncHandler(async (req, res) => {
       const { book_id, seed_title, top_n = 10 } = req.body;
       const bid = book_id || seed_title;
       if (!bid) return res.status(400).json({ success: false, error: 'book_id is required' });
 
-      const uid = req.user.uid;
-      pushActivity(uid, bid, 'view').catch(() => {});
+      const uid = req.user?.uid;
+      if (uid) {
+        pushActivity(uid, bid, 'view').catch(() => {});
+      }
 
-      const surveyCtx = await getUserSurveyContext(uid);
+      const surveyCtx = uid ? await getUserSurveyContext(uid) : {};
 
-      const result = await proxyToAI('POST', '/recommendations/direct', {
+      const payload = {
         book_id:          bid,
         seed_title:       bid,
-        user_id:          uid,
         n:                top_n,
         top_n,
         user_gender:      surveyCtx.user_gender,
         user_age_group:   surveyCtx.user_age_group,
         preferred_genres: surveyCtx.preferred_genres
-      });
+      };
+
+      if (uid) {
+        payload.user_id = uid;
+      }
+
+      const result = await proxyToAI('POST', '/recommendations/direct', payload);
 
       res.json({ success: true, data: normalizeRecommendationsPayload(result) });
     })

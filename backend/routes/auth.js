@@ -5,6 +5,8 @@
 
 const express = require("express");
 const CONFIG = require("../constants/config");
+const { createIPRateLimiter } = require("../middleware/rateLimit");
+const { createCaptchaMiddleware } = require("../middleware/captcha");
 
 /**
  * Async error handler wrapper
@@ -26,10 +28,17 @@ const asyncHandler = (fn) => (req, res, next) => {
 function createAuthRoutes(authService, verifyTokenMiddleware) {
   const router = express.Router();
   const UserService = require("../services/userService");
+  const authRateLimiter = createIPRateLimiter(
+    CONFIG.RATE_LIMIT.AUTH.window,
+    CONFIG.RATE_LIMIT.AUTH.max
+  );
+  const captchaMiddleware = createCaptchaMiddleware();
 
   // POST /auth/signup - Register new user
   router.post(
     "/signup",
+    authRateLimiter,
+    captchaMiddleware,
     asyncHandler(async (req, res) => {
       const result = await authService.signUp(req.body.email, req.body.password);
       res.status(result.status).json(result);
@@ -39,6 +48,8 @@ function createAuthRoutes(authService, verifyTokenMiddleware) {
   // POST /auth/signin - Login user
   router.post(
     "/signin",
+    authRateLimiter,
+    captchaMiddleware,
     asyncHandler(async (req, res) => {
       const result = await authService.signIn(req.body.email, req.body.password);
       res.status(result.status).json(result);
