@@ -12,7 +12,14 @@
  */
 
 require("dotenv").config();
-console.log("🔥 DEBUG URL:", process.env.FASTAPI_URL);
+
+const isDummyMode = process.env.NODE_ENV === 'dummy';
+const dbType = isDummyMode ? 'Neon PostgreSQL' : 'Azure SQL';
+const aiUrl = process.env.FASTAPI_URL || 'http://localhost:8001';
+
+console.log("🔥 DEBUG URL:", aiUrl);
+console.log(`📊 Database Mode: ${isDummyMode ? 'DUMMY (Neon PG)' : 'PRODUCTION (Azure SQL)'}`);
+console.log(`🔐 NODE_ENV: ${process.env.NODE_ENV || 'not set'}`);
 
 const express = require("express");
 const cors = require("cors");
@@ -23,10 +30,11 @@ const { createVerifyTokenMiddleware, createOptionalVerifyTokenMiddleware } = req
 const { createAuthRoutes } = require("./routes/auth");
 const createSurveyRoutes = require("./routes/survey");
 const { initializeDatabase, createUsersTable, createUserSurveyTable } = require("./config/database");
-const { getAllBooks, getBookById, interactWithBook } = require('./controllers/bookController');
 
 // Routes
 const createRecommendationsRoutes = require('./routes/recommendations');
+const booksRoutes = require('./routes/booksRoutes');
+const readingSessionRoutes = require('./routes/readingSessionRoutes');
 
 require('./jobs/cron'); //init cron jobs for ai-related tasks
 
@@ -85,10 +93,11 @@ app.get("/api/protected", verifyTokenMiddleware, (req, res) => {
 // Recommendations Routes
 app.use('/recommendations', createRecommendationsRoutes(verifyTokenMiddleware, optionalVerifyTokenMiddleware));
 
-// Books Routes
-app.get('/books', getAllBooks);
-app.get('/books/:id', optionalVerifyTokenMiddleware, getBookById);
-app.post('/books/:id/interact', verifyTokenMiddleware, interactWithBook);
+// Books Routes (dengan Azure Blob file handling)
+app.use('/', booksRoutes);
+
+// Reading Session Routes (track user reading progress)
+app.use('/reading', verifyTokenMiddleware, readingSessionRoutes);
 
 // Cron Routes
 app.use('/cron', require('./routes/cronRoutes'));
@@ -106,40 +115,47 @@ app.use((err, req, res, next) => {
 // ==========================================
 async function startServer() {
   try {
-    console.log("Initializing Azure SQL Database...");
+    console.log("\n⏳ Initializing Database...");
     await initializeDatabase();
+    console.log("✅ Database initialized successfully\n");
+    
     await createUsersTable();
-    await createUserSurveyTable();
+    const surveyTableReady = await createUserSurveyTable();
     
     app.listen(CONFIG.PORT, async () => {
       console.log(`${CONFIG.MESSAGES.SERVER_RUNNING} ${CONFIG.PORT}`);
       console.log(`Environment: ${CONFIG.NODE_ENV}`);
       console.log(`Auth: Firebase`);
-      console.log(`📊 Database: Azure SQL`);
+      console.log(`📊 Database: ${dbType}`);
 
-      console.log("developing PustarAI (Auto-Reindex)...");
+      // Auto-reindex PustarAI (optional, don't crash if fails)
+      console.log("\n🤖 Attempting to initialize PustarAI...");
       try {
-        const aiUrl = process.env.FASTAPI_URL || 'http://localhost:8001';
-        const cronSecret = process.env.CRON_SECRET || 'pustara-cron-2025';
+        const cronSecret = process.env.CRON_SECRET || process.env.RI_SECRET || 'pustara-cron-2025';
         
-        const res = await fetch(`${aiUrl}/reindex?key=${cronSecret}`, {
+        const reindexRes = await fetch(`${aiUrl}/reindex?key=${cronSecret}`, {
           method: 'GET',
           headers: {
-            'Authorization': `Bearer ${process.env.HF_TOKEN}`
+            'Authorization': `Bearer ${process.env.HF_TOKEN || ''}`
           }
         });
         
-        if (res.ok) {
-          console.log("✅ PustarAI successfully reindexed and is ready to use!");
+        if (reindexRes.ok) {
+          console.log("✅ PustarAI successfully reindexed and is ready!");
         } else {
-          console.log(`⚠️ PustarAI failed to reindex. Status: ${res.status}`);
+          console.log(`⚠️  PustarAI reindex returned status ${reindexRes.status} - may still work`);
         }
       } catch (err) {
-        console.error("❌ Failed to contact HF", err.message);
+        console.warn(`⚠️  Could not contact PustarAI: ${err.message}\n    (This is OK if you're offline or AI not needed yet)`);
       }
     });
   } catch (error) {
-    console.error("❌ Failed to start server:", error);
+    console.error("\n❌ FATAL ERROR - Failed to start server:");
+    console.error(error.message);
+    console.error("\nTroubleshooting steps:");
+    console.error("1. Check your .env file has correct DATABASE_URL");
+    console.error("2. Check NODE_ENV is set to 'dummy' for local development");
+    console.error("3. Check network connectivity");
     process.exit(1);
   }
 }

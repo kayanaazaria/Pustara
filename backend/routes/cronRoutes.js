@@ -4,10 +4,22 @@ const { executeQuery, isDummy } = require('../config/database');
 
 const router = express.Router();
 
-const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN,
-});
+// Initialize Redis safely with fallback
+let redis = null;
+try {
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+  if (!url || !token) {
+    console.warn('⚠️  [cronRoutes] Redis credentials missing - Redis features disabled');
+  } else {
+    redis = new Redis({ url, token });
+    console.log('✅ [cronRoutes] Redis initialized successfully');
+  }
+} catch (err) {
+  console.error('❌ [cronRoutes] Redis initialization failed:', err.message);
+  redis = null;
+}
 
 const STREAM_CURSOR_KEY = 'sync:activity_stream:last_id';
 

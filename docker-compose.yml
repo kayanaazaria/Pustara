@@ -9,11 +9,17 @@ services:
     container_name: pustara-backend
     ports:
       - "3000:3000"
+    env_file:
+      - ./backend/.env
     environment:
-      - NODE_ENV=development
+      - NODE_ENV=dummy
       - FIREBASE_PROJECT_ID=pustara-kw
+      - FIREBASE_API_KEY=AIzaSyD0Wz2CsxmDAj1LqPkNbEyx3hnFUoCnBMs
+      - PORT=3000
     volumes:
-      - ./backend:/app
+      # Mount only source code, preserve node_modules from build
+      - ./backend:/app:delegated
+      # Keep node_modules from docker build
       - /app/node_modules
     command: npm run dev
     restart: always
