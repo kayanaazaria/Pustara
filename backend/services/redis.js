@@ -3,7 +3,7 @@
  */
 
 const { Redis } = require('@upstash/redis');
-const { executeQuery, isDummy } = require('../config/database');
+const { executeQuery, isNeon } = require('../config/database');
 
 let redis = null;
 
@@ -39,7 +39,7 @@ async function resolveCanonicalBookId(bookRef) {
   if (BOOK_REF_CACHE.has(key)) return BOOK_REF_CACHE.get(key);
 
   try {
-    if (isDummy) {
+    if (isNeon) {
       const byId = await executeQuery('SELECT id::text AS id FROM books WHERE id::text = $1 LIMIT 1', [key]);
       if (byId.length > 0) {
         BOOK_REF_CACHE.set(key, byId[0].id);

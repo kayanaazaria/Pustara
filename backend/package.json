@@ -5,7 +5,13 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "backup:db": "node scripts/backup_db.js",
+    "dedupe:books": "node scripts/dedupe_books.js",
+    "dedupe:books:apply": "node scripts/dedupe_books.js --apply",
+    "dedupe:books:near": "node scripts/dedupe_books.js --near",
+    "dedupe:books:near:apply": "node scripts/dedupe_books.js --near --apply",
+    "prepare": "husky install"
   },
   "keywords": [],
   "author": "",
@@ -22,8 +28,12 @@
     "firebase-admin": "^13.7.0",
     "mssql": "^10.0.1",
     "node-cron": "^4.2.1",
+    "nodemailer": "^6.10.1",
     "nodemon": "^3.1.14",
     "pg": "^8.20.0",
     "redis": "^5.11.0"
+  },
+  "devDependencies": {
+    "husky": "^8.0.3"
   }
 }

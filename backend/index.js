@@ -13,12 +13,13 @@
 
 require("dotenv").config();
 
-const isDummyMode = process.env.NODE_ENV === 'dummy';
-const dbType = isDummyMode ? 'Neon PostgreSQL' : 'Azure SQL';
+const nodeEnv = (process.env.NODE_ENV || '').toLowerCase();
+const isNeonMode = nodeEnv === 'neon' || process.env.NEON_CLOUD_MODE === 'true';
+const dbType = isNeonMode ? 'Neon PostgreSQL (Production Cloud)' : 'Azure SQL';
 const aiUrl = process.env.FASTAPI_URL || 'http://localhost:8001';
 
 console.log("🔥 DEBUG URL:", aiUrl);
-console.log(`📊 Database Mode: ${isDummyMode ? 'DUMMY (Neon PG)' : 'PRODUCTION (Azure SQL)'}`);
+console.log(`📊 Database Mode: ${isNeonMode ? 'NEON PRODUCTION CLOUD' : 'PRODUCTION (Azure SQL)'}`);
 console.log(`🔐 NODE_ENV: ${process.env.NODE_ENV || 'not set'}`);
 
 const express = require("express");
@@ -171,7 +172,7 @@ async function startServer() {
     console.error(error.message);
     console.error("\nTroubleshooting steps:");
     console.error("1. Check your .env file has correct DATABASE_URL");
-    console.error("2. Check NODE_ENV is set to 'dummy' for local development");
+    console.error("2. Check NODE_ENV is set to 'neon' for Neon cloud usage");
     console.error("3. Check network connectivity");
     process.exit(1);
   }

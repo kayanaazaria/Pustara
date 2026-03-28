@@ -2,6 +2,7 @@
 const db = require('../config/database');
 const azureBlob = require('../providers/azureBlobProvider');
 const { v4: uuidv4 } = require('uuid');
+const { sendOpsAlert } = require('../services/opsAlertService');
 
 // GET /books - List all books dengan pagination & filters
 exports.getBooks = async (req, res) => {
@@ -278,6 +279,19 @@ exports.deleteBook = async (req, res) => {
 
     if (result.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Book not found' });
+    }
+
+    try {
+      const deleted = result.rows[0] || {};
+      const actor = req.user?.uid || req.user?.email || 'unknown';
+      await sendOpsAlert('Pustara Soft Delete Book', [
+        `Actor: ${actor}`,
+        `Book ID: ${deleted.id || id}`,
+        `Title: ${deleted.title || '-'}`,
+        `is_active set to false`,
+      ]);
+    } catch (alertError) {
+      console.warn('Delete alert email failed:', alertError.message);
     }
 
     res.json({
