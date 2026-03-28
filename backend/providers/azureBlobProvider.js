@@ -4,15 +4,26 @@ require('dotenv').config();
 
 const connectionString = process.env.AZURE_STORAGE_CONNECTION_STRING;
 const containerName = process.env.AZURE_STORAGE_CONTAINER_NAME || 'books';
+const isAzureEnabled = !!connectionString;
 
 class AzureBlobService {
   constructor() {
+    if (!isAzureEnabled) {
+      console.warn('⚠️  Azure Blob Storage disabled: AZURE_STORAGE_CONNECTION_STRING not set');
+      this.blobServiceClient = null;
+      this.containerClient = null;
+      return;
+    }
     this.blobServiceClient = BlobServiceClient.fromConnectionString(connectionString);
     this.containerClient = this.blobServiceClient.getContainerClient(containerName);
   }
 
   // Initialize container (create if not exists)
   async initializeContainer() {
+    if (!isAzureEnabled) {
+      console.warn('⚠️  Azure Blob: Container initialization skipped (not enabled)');
+      return;
+    }
     try {
       // Check if container exists
       const exists = await this.containerClient.exists();
@@ -31,6 +42,10 @@ class AzureBlobService {
 
   // Upload file to Azure Blob
   async uploadFile(fileName, fileBuffer, fileType = 'application/pdf') {
+    if (!isAzureEnabled) {
+      console.warn(`⚠️  Azure Blob upload skipped: file '${fileName}' (Azure Blob not enabled)`);
+      return null;
+    }
     try {
       const blockBlobClient = this.containerClient.getBlockBlobClient(fileName);
       
@@ -49,6 +64,10 @@ class AzureBlobService {
 
   // Generate SAS URL for temporary access
   async generateSasUrl(fileName, expiryHours = 1) {
+    if (!isAzureEnabled) {
+      console.warn(`⚠️  Azure Blob SAS URL skipped: file '${fileName}' (Azure Blob not enabled)`);
+      return null;
+    }
     try {
       const blockBlobClient = this.containerClient.getBlockBlobClient(fileName);
       
@@ -63,6 +82,10 @@ class AzureBlobService {
 
   // Download file from Azure Blob
   async downloadFile(fileName) {
+    if (!isAzureEnabled) {
+      console.warn(`⚠️  Azure Blob download skipped: file '${fileName}' (Azure Blob not enabled)`);
+      return null;
+    }
     try {
       const blockBlobClient = this.containerClient.getBlockBlobClient(fileName);
       const downloadBlockBlobResponse = await blockBlobClient.download(0);
@@ -76,12 +99,19 @@ class AzureBlobService {
 
   // Get file URL
   getFileUrl(fileName) {
+    if (!isAzureEnabled) {
+      return null;
+    }
     const blockBlobClient = this.containerClient.getBlockBlobClient(fileName);
     return blockBlobClient.url;
   }
 
   // Delete file from Azure Blob
   async deleteFile(fileName) {
+    if (!isAzureEnabled) {
+      console.warn(`⚠️  Azure Blob delete skipped: file '${fileName}' (Azure Blob not enabled)`);
+      return;
+    }
     try {
       const blockBlobClient = this.containerClient.getBlockBlobClient(fileName);
       await blockBlobClient.delete();
@@ -94,6 +124,10 @@ class AzureBlobService {
 
   // List all files in container
   async listFiles() {
+    if (!isAzureEnabled) {
+      console.warn('⚠️  Azure Blob list skipped (Azure Blob not enabled)');
+      return [];
+    }
     try {
       const files = [];
       for await (const blob of this.containerClient.listBlobsFlat()) {
