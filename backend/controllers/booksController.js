@@ -4,6 +4,13 @@ const azureBlob = require('../providers/azureBlobProvider');
 const { v4: uuidv4 } = require('uuid');
 const { sendOpsAlert } = require('../services/opsAlertService');
 
+function toRows(result) {
+  if (Array.isArray(result)) return result;
+  if (result && Array.isArray(result.rows)) return result.rows;
+  if (result && Array.isArray(result.recordset)) return result.recordset;
+  return [];
+}
+
 // GET /books - List all books dengan pagination & filters
 exports.getBooks = async (req, res) => {
   try {
@@ -30,6 +37,7 @@ exports.getBooks = async (req, res) => {
     params.push(limit, offset);
 
     const result = await db.executeQuery(query, params);
+    const rows = toRows(result);
     
     // Get total count
     let countQuery = 'SELECT COUNT(*) as total FROM books WHERE is_active = true';
@@ -39,15 +47,16 @@ exports.getBooks = async (req, res) => {
       countParams.push(genre);
     }
     const countResult = await db.executeQuery(countQuery, countParams);
+    const countRows = toRows(countResult);
 
     res.json({
       success: true,
-      data: result.rows,
+      data: rows,
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
-        total: parseInt(countResult.rows[0].total),
-        pages: Math.ceil(parseInt(countResult.rows[0].total) / limit)
+        total: parseInt(countRows[0]?.total || 0),
+        pages: Math.ceil(parseInt(countRows[0]?.total || 0) / limit)
       }
     });
   } catch (error) {
@@ -75,10 +84,11 @@ exports.searchBooks = async (req, res) => {
     `;
 
     const result = await db.executeQuery(query, [searchQuery, limit]);
+    const rows = toRows(result);
 
     res.json({
       success: true,
-      data: result.rows
+      data: rows
     });
   } catch (error) {
     console.error('Error searching books:', error.message);
@@ -93,14 +103,15 @@ exports.getBookDetail = async (req, res) => {
 
     const query = 'SELECT * FROM books WHERE id = $1 AND is_active = true';
     const result = await db.executeQuery(query, [id]);
+    const rows = toRows(result);
 
-    if (result.rows.length === 0) {
+    if (rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Book not found' });
     }
 
     res.json({
       success: true,
-      data: result.rows[0]
+      data: rows[0]
     });
   } catch (error) {
     console.error('Error fetching book detail:', error.message);
@@ -116,12 +127,13 @@ exports.downloadBookFile = async (req, res) => {
     // Get book from database
     const query = 'SELECT id, title, file_url, file_type FROM books WHERE id = $1';
     const result = await db.executeQuery(query, [id]);
+    const rows = toRows(result);
 
-    if (result.rows.length === 0) {
+    if (rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Book not found' });
     }
 
-    const book = result.rows[0];
+    const book = rows[0];
 
     if (!book.file_url) {
       return res.status(404).json({ success: false, message: 'Book file not available' });
@@ -248,14 +260,16 @@ exports.updateBook = async (req, res) => {
       title, authors, genres, description, year, pages, is_active, id
     ]);
 
-    if (result.rows.length === 0) {
+    const rows = toRows(result);
+
+    if (rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Book not found' });
     }
 
     res.json({
       success: true,
       message: 'Book updated successfully',
-      data: result.rows[0]
+      data: rows[0]
     });
   } catch (error) {
     console.error('Error updating book:', error.message);
@@ -276,13 +290,14 @@ exports.deleteBook = async (req, res) => {
     `;
 
     const result = await db.executeQuery(query, [id]);
+    const rows = toRows(result);
 
-    if (result.rows.length === 0) {
+    if (rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Book not found' });
     }
 
     try {
-      const deleted = result.rows[0] || {};
+      const deleted = rows[0] || {};
       const actor = req.user?.uid || req.user?.email || 'unknown';
       await sendOpsAlert('Pustara Soft Delete Book', [
         `Actor: ${actor}`,
