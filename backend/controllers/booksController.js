@@ -11,6 +11,41 @@ function toRows(result) {
   return [];
 }
 
+function parseGenresCell(value) {
+  if (Array.isArray(value)) {
+    return value.map((v) => String(v).trim()).filter(Boolean);
+  }
+
+  if (typeof value === 'string') {
+    const raw = value.trim();
+    if (!raw) return [];
+
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.map((v) => String(v).trim()).filter(Boolean);
+      }
+    } catch (_) {
+      // ignore JSON parsing errors and continue with delimiter parsing
+    }
+
+    if (raw.startsWith('{') && raw.endsWith('}')) {
+      return raw
+        .slice(1, -1)
+        .split(',')
+        .map((v) => v.replace(/^"|"$/g, '').trim())
+        .filter(Boolean);
+    }
+
+    return raw
+      .split(',')
+      .map((v) => v.trim())
+      .filter(Boolean);
+  }
+
+  return [];
+}
+
 // GET /books - List all books dengan pagination & filters
 exports.getBooks = async (req, res) => {
   try {
@@ -61,6 +96,39 @@ exports.getBooks = async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching books:', error.message);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// GET /books/genres - Get unique genre list for browse category
+exports.getGenres = async (_req, res) => {
+  try {
+    const result = await db.executeQuery(
+      'SELECT genres FROM books WHERE is_active = true AND genres IS NOT NULL'
+    );
+    const rows = toRows(result);
+
+    const unique = new Map();
+    for (const row of rows) {
+      const genres = parseGenresCell(row?.genres);
+      for (const genre of genres) {
+        const normalized = genre.trim();
+        if (!normalized) continue;
+        const key = normalized.toLowerCase();
+        if (!unique.has(key)) {
+          unique.set(key, normalized);
+        }
+      }
+    }
+
+    const data = Array.from(unique.values()).sort((a, b) => a.localeCompare(b, 'id'));
+
+    res.json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    console.error('Error fetching genres:', error.message);
     res.status(500).json({ success: false, message: error.message });
   }
 };
