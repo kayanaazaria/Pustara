@@ -14,7 +14,7 @@ async function initNeon() {
   const { Pool } = require('pg');
   pgPool = new Pool({
     connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
+    ssl: process.env.NODE_ENV === 'dummy' ? false : { rejectUnauthorized: false },
   });
   
   // Test connection
@@ -77,6 +77,7 @@ async function initializeDatabase() {
 * Execute query — Abstraction so the service layer doesn't need to know which DB
 * Neon: uses $1, $2, ... placeholders
 * Azure: automatically converted to @p1, @p2, ...
+* Also converts PostgreSQL syntax to T-SQL syntax
 */
 async function executeQuery(query, params = []) {
   if (isNeon) {
@@ -91,15 +92,49 @@ async function executeQuery(query, params = []) {
   let azureQuery = query;
   const request = azurePool.request();
 
+  // Convert placeholders: $1, $2 → @p1, @p2
   params.forEach((val, i) => {
-    // Use a global regex so all $1, $2 are replaced (not just the first one)
     const paramRegex = new RegExp(`\\$${i + 1}\\b`, 'g');
     azureQuery = azureQuery.replace(paramRegex, `@p${i + 1}`);
     request.input(`p${i + 1}`, val);
   });
 
+  // Convert PostgreSQL syntax to T-SQL syntax
+  
+  // 1. Convert true/false literals to 1/0
+  azureQuery = azureQuery.replace(/\btrue\b/gi, '1');
+  azureQuery = azureQuery.replace(/\bfalse\b/gi, '0');
+  
+  // 2. Convert @pN = ANY(column) to CHARINDEX for JSON arrays
+  // Handles: @p1 = ANY(genres), @p2 = ANY(authors) etc
+  azureQuery = azureQuery.replace(
+    /@p(\d+)\s*=\s*ANY\s*\((\w+)\)/gi,
+    (match, paramNum, columnName) => {
+      return `CHARINDEX('\"' + @p${paramNum} + '\"', ${columnName}) > 0`;
+    }
+  );
+  
+  // 3. Convert LIMIT x OFFSET y to OFFSET y ROWS FETCH NEXT x ROWS ONLY
+  // Pattern: LIMIT @pN [OFFSET @pM]
+  azureQuery = azureQuery.replace(
+    /LIMIT\s+@p(\d+)(?:\s+OFFSET\s+@p(\d+))?/gi,
+    (match, limitParam, offsetParam) => {
+      if (offsetParam) {
+        return `OFFSET @p${offsetParam} ROWS FETCH NEXT @p${limitParam} ROWS ONLY`;
+      } else {
+        return `OFFSET 0 ROWS FETCH NEXT @p${limitParam} ROWS ONLY`;
+      }
+    }
+  );
+  
+  // 4. Convert ILIKE to LIKE for case-insensitive search
+  azureQuery = azureQuery.replace(/\bILIKE\b/gi, 'LIKE');
+  
   const result = await request.query(azureQuery);
-  return result.recordset;
+  
+  // Return in same format as pg library for compatibility
+  // Controllers expect result.rows, but mssql uses result.recordset
+  return { rows: result.recordset };
 }
 
 /**

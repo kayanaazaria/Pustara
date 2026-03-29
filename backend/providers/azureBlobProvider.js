@@ -1,4 +1,5 @@
 // Azure Blob Storage service untuk handle book files
+const crypto = require('crypto');
 const { BlobServiceClient } = require('@azure/storage-blob');
 require('dotenv').config();
 
@@ -93,6 +94,7 @@ class AzureBlobService {
       return downloadBlockBlobResponse.readableStreamBody;
     } catch (error) {
       console.error('Error downloading file:', error.message);
+      if (error.stack) console.error('Stack:', error.stack);
       throw error;
     }
   }
