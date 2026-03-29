@@ -11,22 +11,40 @@
  * - routes/     : API routes
  */
 
+// CRITICAL: Polyfill global crypto for @typespec/ts-http-runtime
+if (typeof global.crypto === 'undefined') {
+  global.crypto = require('crypto').webcrypto;
+}
+
 require("dotenv").config();
-console.log("🔥 DEBUG URL:", process.env.FASTAPI_URL);
+
+const nodeEnv = (process.env.NODE_ENV || '').toLowerCase();
+const isNeonMode = nodeEnv === 'neon' || process.env.NEON_CLOUD_MODE === 'true';
+const dbType = isNeonMode ? 'Neon PostgreSQL (Production Cloud)' : 'Azure SQL';
+const aiUrl = process.env.FASTAPI_URL || 'http://localhost:8001';
+
+console.log("🔥 DEBUG URL:", aiUrl);
+console.log(`📊 Database Mode: ${isNeonMode ? 'NEON PRODUCTION CLOUD' : 'PRODUCTION (Azure SQL)'}`);
+console.log(`🔐 NODE_ENV: ${process.env.NODE_ENV || 'not set'}`);
 
 const express = require("express");
 const cors = require("cors");
+const fileUpload = require("express-fileupload");
 const CONFIG = require("./constants/config");
 const FirebaseProvider = require("./providers/firebaseProvider");
 const AuthService = require("./services/authService");
 const { createVerifyTokenMiddleware, createOptionalVerifyTokenMiddleware } = require("./middleware/auth");
+const { authorizeAdmin } = require("./middleware/adminAuth");
 const { createAuthRoutes } = require("./routes/auth");
 const createSurveyRoutes = require("./routes/survey");
 const { initializeDatabase, createUsersTable, createUserSurveyTable } = require("./config/database");
-const { getAllBooks, getBookById, interactWithBook } = require('./controllers/bookController');
 
 // Routes
 const createRecommendationsRoutes = require('./routes/recommendations');
+const booksRoutes = require('./routes/booksRoutes');
+const booksAdminRoutes = require('./routes/booksAdminRoutes');
+const readingSessionRoutes = require('./routes/readingSessionRoutes');
+const analyticsRoutes = require('./routes/analyticsRoutes');
 
 require('./jobs/cron'); //init cron jobs for ai-related tasks
 
@@ -49,6 +67,13 @@ app.use((req, res, next) => {
 
 // Middleware
 app.use(express.json());
+app.use(fileUpload({
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max
+  abortOnLimit: true,
+  responseOnLimit: 'File size too large (max 50MB)',
+  useTempFiles: true,
+  tempFileDir: '/tmp/',
+}));
 app.use(cors({
   origin: CONFIG.CORS_ORIGINS || "http://localhost:3001",
   methods: ["GET", "POST", "PUT", "DELETE"],
@@ -85,10 +110,18 @@ app.get("/api/protected", verifyTokenMiddleware, (req, res) => {
 // Recommendations Routes
 app.use('/recommendations', createRecommendationsRoutes(verifyTokenMiddleware, optionalVerifyTokenMiddleware));
 
-// Books Routes
-app.get('/books', getAllBooks);
-app.get('/books/:id', optionalVerifyTokenMiddleware, getBookById);
-app.post('/books/:id/interact', verifyTokenMiddleware, interactWithBook);
+// Books Routes (dengan Azure Blob file handling)
+app.use('/', booksRoutes);
+
+// Books Admin Routes (protected by verifyToken + authorizeAdmin)
+// IMPORTANT: Mount to /admin prefix to avoid catching all / routes
+app.use('/admin/books', verifyTokenMiddleware, authorizeAdmin, booksAdminRoutes);
+
+// Reading Session Routes (track user reading progress)
+app.use('/reading', verifyTokenMiddleware, readingSessionRoutes);
+
+// Analytics Routes (stats & dashboard)
+app.use('/stats', analyticsRoutes);
 
 // Cron Routes
 app.use('/cron', require('./routes/cronRoutes'));
@@ -105,43 +138,50 @@ app.use((err, req, res, next) => {
 // START SERVER
 // ==========================================
 async function startServer() {
+  let dbConnected = false;
+  
   try {
-    console.log("Initializing Azure SQL Database...");
+    console.log("\n⏳ Initializing Database...");
     await initializeDatabase();
-    await createUsersTable();
-    await createUserSurveyTable();
+    console.log("✅ Database initialized successfully\n");
     
-    app.listen(CONFIG.PORT, async () => {
-      console.log(`${CONFIG.MESSAGES.SERVER_RUNNING} ${CONFIG.PORT}`);
-      console.log(`Environment: ${CONFIG.NODE_ENV}`);
-      console.log(`Auth: Firebase`);
-      console.log(`📊 Database: Azure SQL`);
-
-      console.log("developing PustarAI (Auto-Reindex)...");
-      try {
-        const aiUrl = process.env.FASTAPI_URL || 'http://localhost:8001';
-        const cronSecret = process.env.CRON_SECRET || 'pustara-cron-2025';
-        
-        const res = await fetch(`${aiUrl}/reindex?key=${cronSecret}`, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${process.env.HF_TOKEN}`
-          }
-        });
-        
-        if (res.ok) {
-          console.log("✅ PustarAI successfully reindexed and is ready to use!");
-        } else {
-          console.log(`⚠️ PustarAI failed to reindex. Status: ${res.status}`);
-        }
-      } catch (err) {
-        console.error("❌ Failed to contact HF", err.message);
-      }
-    });
-  } catch (error) {
-    console.error("❌ Failed to start server:", error);
-    process.exit(1);
+    await createUsersTable();
+    const surveyTableReady = await createUserSurveyTable();
+    dbConnected = true;
+  } catch (dbError) {
+    console.warn("\n⚠️  Database initialization failed (running in offline mode):");
+    console.warn(`   ${dbError.message}`);
+    console.warn("   You can still use the API with limited functionality\n");
   }
+  
+  // Start server even if DB failed
+  app.listen(CONFIG.PORT, async () => {
+    console.log(`${CONFIG.MESSAGES.SERVER_RUNNING} ${CONFIG.PORT}`);
+    console.log(`Environment: ${CONFIG.NODE_ENV}`);
+    console.log(`Auth: Firebase`);
+    console.log(`📊 Database: ${dbType} ${dbConnected ? '✅' : '⚠️ OFFLINE'}`);
+
+    // Auto-reindex PustarAI (optional, don't crash if fails)
+    console.log("\n🤖 Attempting to initialize PustarAI...");
+    try {
+      const cronSecret = process.env.CRON_SECRET || process.env.RI_SECRET || 'pustara-cron-2025';
+      
+      const reindexRes = await fetch(`${aiUrl}/reindex?key=${cronSecret}`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${process.env.HF_TOKEN || ''}`
+        }
+      });
+      
+      if (reindexRes.ok) {
+        console.log("✅ PustarAI successfully reindexed and is ready!");
+      } else {
+        console.log(`⚠️  PustarAI reindex returned status ${reindexRes.status} - may still work`);
+      }
+    } catch (err) {
+      console.warn(`⚠️  Could not contact PustarAI: ${err.message}\n    (This is OK if you're offline or AI not needed yet)`);
+    }
+  });
 }
 
 startServer();

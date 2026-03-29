@@ -1,7 +1,7 @@
 require('dotenv').config();
 
 const { Redis } = require('@upstash/redis');
-const { initializeDatabase, executeQuery, isDummy, closeDatabase } = require('../config/database');
+const { initializeDatabase, executeQuery, isNeon, closeDatabase } = require('../config/database');
 
 const TRENDING_KEY = 'trending:books:7d';
 
@@ -9,7 +9,7 @@ async function resolveCanonicalBookId(bookRef) {
   const key = String(bookRef || '').trim();
   if (!key) return null;
 
-  if (isDummy) {
+  if (isNeon) {
     let rows = await executeQuery('SELECT id::text AS id FROM books WHERE id::text = $1 LIMIT 1', [key]);
     if (rows[0]?.id) return rows[0].id;
 

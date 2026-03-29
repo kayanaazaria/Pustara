@@ -3,7 +3,7 @@
  * Handles CRUD operations untuk user survey data di Azure SQL & Neon (Dummy)
  */
 
-const { executeQuery, isDummy } = require('../config/database');
+const { executeQuery, isNeon } = require('../config/database');
 const UserService = require('./userService');
 
 class UserSurveyService {
@@ -23,7 +23,7 @@ class UserSurveyService {
       
       let query = '';
 
-      if (isDummy) {
+      if (isNeon) {
         query = `
           INSERT INTO UserSurvey (userId, gender, age, favoriteGenre) 
           VALUES ($1, $2, $3, $4)
@@ -59,8 +59,8 @@ class UserSurveyService {
    */
   static async getSurveyByUid(uid) {
     try {
-      const userCol = isDummy ? 'firebase_uid' : 'uid';
-      const userTable = isDummy ? 'users' : 'Users';
+      const userCol = isNeon ? 'firebase_uid' : 'uid';
+      const userTable = isNeon ? 'users' : 'Users';
       
       const query = `
         SELECT us.* FROM UserSurvey us
@@ -90,11 +90,11 @@ class UserSurveyService {
 
       const setClause = fields.map((f, i) => `${f} = $${i + 2}`).join(', ');
       const values = [userId, ...fields.map(f => updates[f])];
-      const timeFunc = isDummy ? 'NOW()' : 'GETDATE()';
+      const timeFunc = isNeon ? 'NOW()' : 'GETDATE()';
       
       let query = '';
 
-      if (isDummy) {
+      if (isNeon) {
         query = `
           UPDATE UserSurvey
           SET ${setClause}, updatedAt = ${timeFunc}
@@ -123,8 +123,8 @@ class UserSurveyService {
    */
   static async getUserWithSurvey(uid) {
     try {
-      const userCol = isDummy ? 'firebase_uid' : 'uid';
-      const userTable = isDummy ? 'users' : 'Users';
+      const userCol = isNeon ? 'firebase_uid' : 'uid';
+      const userTable = isNeon ? 'users' : 'Users';
       
       // Ambil detail survey yang relevan sesuai skema
       const query = `

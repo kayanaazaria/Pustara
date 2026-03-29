@@ -1,13 +1,25 @@
 const express = require('express');
 const { Redis } = require('@upstash/redis');
-const { executeQuery, isDummy } = require('../config/database');
+const { executeQuery, isNeon } = require('../config/database');
 
 const router = express.Router();
 
-const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN,
-});
+// Initialize Redis safely with fallback
+let redis = null;
+try {
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+  if (!url || !token) {
+    console.warn('⚠️  [cronRoutes] Redis credentials missing - Redis features disabled');
+  } else {
+    redis = new Redis({ url, token });
+    console.log('✅ [cronRoutes] Redis initialized successfully');
+  }
+} catch (err) {
+  console.error('❌ [cronRoutes] Redis initialization failed:', err.message);
+  redis = null;
+}
 
 const STREAM_CURSOR_KEY = 'sync:activity_stream:last_id';
 
@@ -25,7 +37,7 @@ function makeSyntheticIdentity(firebaseUid) {
 }
 
 async function ensureUserFromFirebaseUid(firebaseUid) {
-  if (!isDummy || !firebaseUid) return null;
+  if (!isNeon || !firebaseUid) return null;
   const { username, email } = makeSyntheticIdentity(firebaseUid);
 
   try {
@@ -248,8 +260,8 @@ router.get('/sync', async (req, res) => {
     return res.status(401).json({ success: false, message: 'Hayo mau ngapain? 🤨' });
   }
 
-  console.log(`🔄 [CRON] Starting Redis to DB sync... (Target DB: ${isDummy ? 'Neon/Postgres' : 'Azure/SQL Server'})`);
-  const timeFunc = isDummy ? 'NOW()' : 'GETDATE()';
+  console.log(`🔄 [CRON] Starting Redis to DB sync... (Target DB: ${isNeon ? 'Neon/Postgres' : 'Azure/SQL Server'})`);
+  const timeFunc = isNeon ? 'NOW()' : 'GETDATE()';
   let syncedCount = 0;
   let skippedCount = 0;
   let skippedInvalid = 0;
@@ -401,7 +413,7 @@ router.get('/sync', async (req, res) => {
       cleared: shouldClear && !hasError && keyType === 'list',
       stream_cursor_before: streamCursorBefore,
       stream_cursor_after: streamCursorAfter,
-      db_target: isDummy ? 'Neon' : 'Azure SQL'
+      db_target: isNeon ? 'Neon' : 'Azure SQL'
     });
 
   } catch (error) {

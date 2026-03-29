@@ -1,0 +1,39 @@
+name: Scheduled DB Backup
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pg_dump client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Create compressed dump
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "DATABASE_URL secret is missing" >&2
+            exit 1
+          fi
+          mkdir -p backups
+          stamp=$(date -u +'%Y-%m-%dT%H-%M-%SZ')
+          out="backups/pustara-backup-${stamp}.sql.gz"
+          pg_dump --no-owner --no-privileges "$DATABASE_URL" | gzip -9 > "$out"
+          ls -lh backups
+
+      - name: Upload backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-backup-${{ github.run_id }}
+          path: backups/*.sql.gz
+          retention-days: 30

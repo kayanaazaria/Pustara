@@ -1,6 +1,6 @@
 const cron   = require('node-cron');
 const axios  = require('axios');
-const { executeQuery, isDummy } = require('../config/database');   
+const { executeQuery, isNeon } = require('../config/database');   
 
 const FASTAPI_URL  = process.env.FASTAPI_URL  || 'http://localhost:8001';
 const CRON_SECRET  = process.env.CRON_SECRET  || 'pustara-cron-2025';
@@ -39,13 +39,13 @@ async function rebuildModels() {
 async function checkOverdueLoans() {
   log('info', '🔍 Checking overdue loans …');
   try {
-    const timeFunc = isDummy ? 'NOW()' : 'GETDATE()';
-    const intervalQuery = isDummy 
+    const timeFunc = isNeon ? 'NOW()' : 'GETDATE()';
+    const intervalQuery = isNeon 
       ? `AND due_at BETWEEN NOW() AND NOW() + INTERVAL '25 hours'`
       : `AND due_at BETWEEN GETDATE() AND DATEADD(hour, 25, GETDATE())`;
 
     // 1. Update overdue status (Using compatible queries for Neon and Azure)
-    const updateQuery = isDummy
+    const updateQuery = isNeon
       ? `UPDATE loans SET status = 'overdue' WHERE status = 'active' AND due_at < NOW() RETURNING id, user_id, book_id`
       : `UPDATE loans SET status = 'overdue' OUTPUT inserted.id, inserted.user_id, inserted.book_id WHERE status = 'active' AND due_at < GETDATE()`;
     
@@ -93,8 +93,8 @@ async function checkOverdueLoans() {
 async function syncBookRatings() {
   log('info', '⭐ Syncing book ratings …');
   try {
-    const timeFunc = isDummy ? 'NOW()' : 'GETDATE()';
-    const castFunc = isDummy ? 'ROUND(AVG(rating)::NUMERIC, 2)' : 'CAST(AVG(rating) AS DECIMAL(10,2))';
+    const timeFunc = isNeon ? 'NOW()' : 'GETDATE()';
+    const castFunc = isNeon ? 'ROUND(AVG(rating)::NUMERIC, 2)' : 'CAST(AVG(rating) AS DECIMAL(10,2))';
 
     await executeQuery(`
       UPDATE books 
@@ -117,8 +117,8 @@ async function syncBookRatings() {
 // ══════════════════════════════════════════════════════════════════════════════
 async function syncBookStock() {
   try {
-    const timeFunc = isDummy ? 'NOW()' : 'GETDATE()';
-    const greatestFunc = isDummy 
+    const timeFunc = isNeon ? 'NOW()' : 'GETDATE()';
+    const greatestFunc = isNeon 
         ? 'GREATEST(0, total_stock - sub.active_loans)'
         : 'CASE WHEN total_stock - sub.active_loans < 0 THEN 0 ELSE total_stock - sub.active_loans END';
 
