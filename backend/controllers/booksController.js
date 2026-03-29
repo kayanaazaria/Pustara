@@ -39,9 +39,20 @@ exports.getBooks = async (req, res) => {
     }
     const countResult = await db.executeQuery(countQuery, countParams);
 
+    // Transform file_url to use backend endpoint instead of direct blob URL
+    const booksData = result.rows.map(book => {
+      if (book.file_url && book.id) {
+        return {
+          ...book,
+          file_url: `http://localhost:3000/books/${book.id}/file`
+        };
+      }
+      return book;
+    });
+
     res.json({
       success: true,
-      data: result.rows,
+      data: booksData,
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
@@ -97,9 +108,15 @@ exports.getBookDetail = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Book not found' });
     }
 
+    const book = result.rows[0];
+    // Transform file_url to use backend endpoint
+    if (book.file_url && book.id) {
+      book.file_url = `http://localhost:3000/books/${book.id}/file`;
+    }
+
     res.json({
       success: true,
-      data: result.rows[0]
+      data: book
     });
   } catch (error) {
     console.error('Error fetching book detail:', error.message);

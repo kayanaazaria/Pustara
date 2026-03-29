@@ -30,14 +30,15 @@ class UserService {
         `, [uid, username, displayName || username, email]);
       } else {
         // Azure SQL
+        const username = email.split('@')[0].toLowerCase().replace(/[^a-z0-9_]/g, '_');
         rows = await executeQuery(`
-          IF NOT EXISTS (SELECT 1 FROM Users WHERE uid = $1)
+          IF NOT EXISTS (SELECT 1 FROM users WHERE firebase_uid = @p1)
           BEGIN
-            INSERT INTO Users (uid, email, displayName)
-            VALUES ($1, $2, $3);
+            INSERT INTO users (firebase_uid, username, email, display_name)
+            VALUES (@p1, @p2, @p3, @p4);
           END
-          SELECT * FROM Users WHERE uid = $1;
-        `, [uid, email, displayName || email.split('@')[0]]);
+          SELECT * FROM users WHERE firebase_uid = @p1;
+        `, [uid, username, email, displayName || username]);
       }
 
       console.log(`✅ User created: ${uid}`);
@@ -53,8 +54,7 @@ class UserService {
    */
   static async getUserByUid(uid) {
     try {
-      const col  = isDummy ? 'firebase_uid' : 'uid';
-      const rows = await executeQuery(`SELECT * FROM ${isDummy ? 'users' : 'Users'} WHERE ${col} = $1`, [uid]);
+      const rows = await executeQuery(`SELECT * FROM users WHERE firebase_uid = $1`, [uid]);
       return { success: true, data: rows[0] || null };
     } catch (error) {
       console.error('getUserByUid error:', error.message);
@@ -67,21 +67,18 @@ class UserService {
    */
   static async getUserByEmail(email) {
     try {
-      const rows = await executeQuery(`SELECT * FROM ${isDummy ? 'users' : 'Users'} WHERE email = $1`, [email]);
+      const rows = await executeQuery(`SELECT * FROM users WHERE email = $1`, [email]);
       return { success: true, data: rows[0] || null };
     } catch (error) {
       return { success: false, error: error.message };
     }
   }
 
-/**
-   * Update user profile
-   */
   static async updateUser(uid, updates) {
     try {
       const allowed = isDummy
         ? ['display_name', 'avatar_url', 'bio', 'preferred_genres']
-        : ['displayName', 'photoURL'];
+        : ['display_name', 'avatar_url', 'bio', 'preferred_genres'];
 
       const fields = Object.keys(updates).filter(k => allowed.includes(k));
       if (!fields.length) return { success: false, error: 'No valid fields to update' };
@@ -99,8 +96,8 @@ class UserService {
       } else {
         // Azure SQL mode (GETDATE() dan w/o RETURNING)
         rows = await executeQuery(
-          `UPDATE Users SET ${setClause}, updatedAt = GETDATE() WHERE uid = $1;
-           SELECT * FROM Users WHERE uid = $1;`,
+          `UPDATE users SET ${setClause}, updated_at = GETDATE() WHERE firebase_uid = $1;
+           SELECT * FROM users WHERE firebase_uid = $1;`,
           values
         );
       }

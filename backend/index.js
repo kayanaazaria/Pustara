@@ -11,6 +11,11 @@
  * - routes/     : API routes
  */
 
+// CRITICAL: Polyfill global crypto for @typespec/ts-http-runtime
+if (typeof global.crypto === 'undefined') {
+  global.crypto = require('crypto').webcrypto;
+}
+
 require("dotenv").config();
 
 const isDummyMode = process.env.NODE_ENV === 'dummy';
@@ -108,7 +113,8 @@ app.use('/recommendations', createRecommendationsRoutes(verifyTokenMiddleware, o
 app.use('/', booksRoutes);
 
 // Books Admin Routes (protected by verifyToken + authorizeAdmin)
-app.use('/', verifyTokenMiddleware, authorizeAdmin, booksAdminRoutes);
+// IMPORTANT: Mount to /admin prefix to avoid catching all / routes
+app.use('/admin/books', verifyTokenMiddleware, authorizeAdmin, booksAdminRoutes);
 
 // Reading Session Routes (track user reading progress)
 app.use('/reading', verifyTokenMiddleware, readingSessionRoutes);
@@ -131,6 +137,8 @@ app.use((err, req, res, next) => {
 // START SERVER
 // ==========================================
 async function startServer() {
+  let dbConnected = false;
+  
   try {
     console.log("\n⏳ Initializing Database...");
     await initializeDatabase();
@@ -138,43 +146,41 @@ async function startServer() {
     
     await createUsersTable();
     const surveyTableReady = await createUserSurveyTable();
-    
-    app.listen(CONFIG.PORT, async () => {
-      console.log(`${CONFIG.MESSAGES.SERVER_RUNNING} ${CONFIG.PORT}`);
-      console.log(`Environment: ${CONFIG.NODE_ENV}`);
-      console.log(`Auth: Firebase`);
-      console.log(`📊 Database: ${dbType}`);
-
-      // Auto-reindex PustarAI (optional, don't crash if fails)
-      console.log("\n🤖 Attempting to initialize PustarAI...");
-      try {
-        const cronSecret = process.env.CRON_SECRET || process.env.RI_SECRET || 'pustara-cron-2025';
-        
-        const reindexRes = await fetch(`${aiUrl}/reindex?key=${cronSecret}`, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${process.env.HF_TOKEN || ''}`
-          }
-        });
-        
-        if (reindexRes.ok) {
-          console.log("✅ PustarAI successfully reindexed and is ready!");
-        } else {
-          console.log(`⚠️  PustarAI reindex returned status ${reindexRes.status} - may still work`);
-        }
-      } catch (err) {
-        console.warn(`⚠️  Could not contact PustarAI: ${err.message}\n    (This is OK if you're offline or AI not needed yet)`);
-      }
-    });
-  } catch (error) {
-    console.error("\n❌ FATAL ERROR - Failed to start server:");
-    console.error(error.message);
-    console.error("\nTroubleshooting steps:");
-    console.error("1. Check your .env file has correct DATABASE_URL");
-    console.error("2. Check NODE_ENV is set to 'dummy' for local development");
-    console.error("3. Check network connectivity");
-    process.exit(1);
+    dbConnected = true;
+  } catch (dbError) {
+    console.warn("\n⚠️  Database initialization failed (running in offline mode):");
+    console.warn(`   ${dbError.message}`);
+    console.warn("   You can still use the API with limited functionality\n");
   }
+  
+  // Start server even if DB failed
+  app.listen(CONFIG.PORT, async () => {
+    console.log(`${CONFIG.MESSAGES.SERVER_RUNNING} ${CONFIG.PORT}`);
+    console.log(`Environment: ${CONFIG.NODE_ENV}`);
+    console.log(`Auth: Firebase`);
+    console.log(`📊 Database: ${dbType} ${dbConnected ? '✅' : '⚠️ OFFLINE'}`);
+
+    // Auto-reindex PustarAI (optional, don't crash if fails)
+    console.log("\n🤖 Attempting to initialize PustarAI...");
+    try {
+      const cronSecret = process.env.CRON_SECRET || process.env.RI_SECRET || 'pustara-cron-2025';
+      
+      const reindexRes = await fetch(`${aiUrl}/reindex?key=${cronSecret}`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${process.env.HF_TOKEN || ''}`
+        }
+      });
+      
+      if (reindexRes.ok) {
+        console.log("✅ PustarAI successfully reindexed and is ready!");
+      } else {
+        console.log(`⚠️  PustarAI reindex returned status ${reindexRes.status} - may still work`);
+      }
+    } catch (err) {
+      console.warn(`⚠️  Could not contact PustarAI: ${err.message}\n    (This is OK if you're offline or AI not needed yet)`);
+    }
+  });
 }
 
 startServer();

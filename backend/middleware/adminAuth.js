@@ -23,7 +23,7 @@ async function authorizeAdmin(req, res, next) {
 
     // Query user from database to verify admin role
     const result = await pool.query(
-      'SELECT uid, role FROM users WHERE uid = $1',
+      'SELECT firebase_uid, role FROM users WHERE firebase_uid = $1',
       [req.user.uid]
     );
 
