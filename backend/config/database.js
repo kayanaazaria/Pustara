@@ -74,6 +74,85 @@ async function initializeDatabase() {
 }
 
 /**
+ * Neon-only schema compatibility patcher.
+ * Keeps shelf endpoints stable even when production schema drifts
+ * (e.g. created_at vs added_at, due_at vs due_date).
+ */
+async function ensureNeonShelfSchemaCompatibility() {
+  if (!isNeon) return;
+  if (!pgPool) throw new Error('Neon DB not initialized. Call initializeDatabase() first');
+
+  const safeStatements = [
+    "ALTER TABLE IF EXISTS wishlist ADD COLUMN IF NOT EXISTS added_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP",
+    "ALTER TABLE IF EXISTS loans ADD COLUMN IF NOT EXISTS borrowed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP",
+    "ALTER TABLE IF EXISTS loans ADD COLUMN IF NOT EXISTS due_date TIMESTAMPTZ",
+    "ALTER TABLE IF EXISTS loans ADD COLUMN IF NOT EXISTS returned_at TIMESTAMPTZ",
+    "ALTER TABLE IF EXISTS reading_sessions ADD COLUMN IF NOT EXISTS status TEXT",
+    "ALTER TABLE IF EXISTS reading_sessions ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP",
+    "ALTER TABLE IF EXISTS reading_sessions ADD COLUMN IF NOT EXISTS last_read_at TIMESTAMPTZ",
+    "ALTER TABLE IF EXISTS reading_sessions ADD COLUMN IF NOT EXISTS finished_at TIMESTAMPTZ",
+    "ALTER TABLE IF EXISTS reading_sessions ADD COLUMN IF NOT EXISTS progress_percentage NUMERIC DEFAULT 0",
+    "ALTER TABLE IF EXISTS reading_sessions ADD COLUMN IF NOT EXISTS current_page INTEGER DEFAULT 0",
+    "ALTER TABLE IF EXISTS reading_sessions ADD COLUMN IF NOT EXISTS total_pages INTEGER DEFAULT 0",
+  ];
+
+  for (const statement of safeStatements) {
+    try {
+      await pgPool.query(statement);
+    } catch (error) {
+      console.warn(`⚠️  Schema compatibility statement skipped: ${error.message}`);
+    }
+  }
+
+  const backfillBlocks = [
+    `DO $$
+     BEGIN
+       IF EXISTS (
+         SELECT 1 FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'wishlist' AND column_name = 'created_at'
+       ) THEN
+         UPDATE wishlist
+         SET added_at = COALESCE(added_at, created_at)
+         WHERE added_at IS NULL;
+       END IF;
+     END $$;`,
+    `DO $$
+     BEGIN
+       IF EXISTS (
+         SELECT 1 FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'loans' AND column_name = 'due_at'
+       ) THEN
+         UPDATE loans
+         SET due_date = COALESCE(due_date, due_at)
+         WHERE due_date IS NULL;
+       END IF;
+     END $$;`,
+    `DO $$
+     BEGIN
+       IF EXISTS (
+         SELECT 1 FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'loans' AND column_name = 'created_at'
+       ) THEN
+         UPDATE loans
+         SET borrowed_at = COALESCE(borrowed_at, created_at)
+         WHERE borrowed_at IS NULL;
+       END IF;
+     END $$;`,
+    `UPDATE reading_sessions SET status = COALESCE(status, 'reading') WHERE status IS NULL`,
+  ];
+
+  for (const statement of backfillBlocks) {
+    try {
+      await pgPool.query(statement);
+    } catch (error) {
+      console.warn(`⚠️  Schema compatibility backfill skipped: ${error.message}`);
+    }
+  }
+
+  console.log('✅ Neon shelf schema compatibility ensured');
+}
+
+/**
 * Execute query — Abstraction so the service layer doesn't need to know which DB
 * Neon: uses $1, $2, ... placeholders
 * Azure: automatically converted to @p1, @p2, ...
@@ -229,6 +308,7 @@ async function closeDatabase() {
 
 module.exports = {
   initializeDatabase,
+  ensureNeonShelfSchemaCompatibility,
   executeQuery,
   getPool,
   createUsersTable,

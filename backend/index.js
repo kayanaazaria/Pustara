@@ -37,7 +37,7 @@ const { createVerifyTokenMiddleware, createOptionalVerifyTokenMiddleware } = req
 const { authorizeAdmin } = require("./middleware/adminAuth");
 const { createAuthRoutes } = require("./routes/auth");
 const createSurveyRoutes = require("./routes/survey");
-const { initializeDatabase, createUsersTable, createUserSurveyTable } = require("./config/database");
+const { initializeDatabase, ensureNeonShelfSchemaCompatibility, createUsersTable, createUserSurveyTable } = require("./config/database");
 
 // Routes
 const createRecommendationsRoutes = require('./routes/recommendations');
@@ -45,6 +45,9 @@ const booksRoutes = require('./routes/booksRoutes');
 const booksAdminRoutes = require('./routes/booksAdminRoutes');
 const readingSessionRoutes = require('./routes/readingSessionRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
+const userRoutes = require('./routes/userRoutes');
+const shelfRoutes = require('./routes/shelfRoutes');
+const feedRoutes = require('./routes/feedRoutes');
 
 require('./jobs/cron'); //init cron jobs for ai-related tasks
 
@@ -120,6 +123,15 @@ app.use('/admin/books', verifyTokenMiddleware, authorizeAdmin, booksAdminRoutes)
 // Reading Session Routes (track user reading progress)
 app.use('/reading', verifyTokenMiddleware, readingSessionRoutes);
 
+// Shelf Routes (loans, reading sessions, wishlist)
+app.use('/shelf', verifyTokenMiddleware, shelfRoutes);
+
+// Feed Routes (activity, notifications, recommendations)
+app.use('/feed', verifyTokenMiddleware, feedRoutes);
+
+// User Social/Profile Routes (allow optional auth for actor-aware responses)
+app.use('/users', optionalVerifyTokenMiddleware, userRoutes);
+
 // Analytics Routes (stats & dashboard)
 app.use('/stats', analyticsRoutes);
 
@@ -143,6 +155,11 @@ async function startServer() {
   try {
     console.log("\n⏳ Initializing Database...");
     await initializeDatabase();
+    try {
+      await ensureNeonShelfSchemaCompatibility();
+    } catch (schemaError) {
+      console.warn(`⚠️  Shelf schema compatibility check skipped: ${schemaError.message}`);
+    }
     console.log("✅ Database initialized successfully\n");
     
     await createUsersTable();

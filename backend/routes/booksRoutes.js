@@ -7,6 +7,7 @@ const booksController = require('../controllers/booksController');
 router.get('/books', booksController.getBooks);
 router.get('/books/genres', booksController.getGenres);
 router.get('/books/search', booksController.searchBooks);
+router.get('/books/:id/similar', booksController.getSimilarBooks);
 router.get('/books/:id', booksController.getBookDetail);
 router.get('/books/:id/file', booksController.downloadBookFile);
 

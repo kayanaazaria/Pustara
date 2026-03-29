@@ -158,6 +158,15 @@ async function getUserSurveyContext(uid) {
   try {
     const result = await UserSurveyService.getSurveyByUid(uid);
     if (result.success && result.data) {
+      if (result.data.survey_status === 'skipped') {
+        return {
+          user_gender: null,
+          user_age: null,
+          user_age_group: null,
+          preferred_genres: null,
+        };
+      }
+
       let ageGroup = null;
       const exactAge = parseInt(result.data.age);
       if (!isNaN(exactAge)) {
@@ -175,6 +184,8 @@ async function getUserSurveyContext(uid) {
       } else if (Array.isArray(result.data.favoriteGenre)) {
         genresArray = result.data.favoriteGenre;
       }
+
+      genresArray = genresArray.filter((genre) => genre && genre !== '__SKIPPED__');
 
       return {
         user_gender:      result.data.gender || null, // "L", "P", "X"
@@ -282,7 +293,7 @@ function createRecommendationsRoutes(verifyTokenMiddleware, optionalVerifyTokenM
     verifyTokenMiddleware,
     asyncHandler(async (req, res) => {
       const { book_id, action } = req.body;
-      const validActions = ['view', 'read', 'like', 'bookmark', 'share', 'review'];
+      const validActions = ['view', 'read', 'like', 'bookmark', 'wishlist', 'share', 'review'];
 
       if (!book_id || !validActions.includes(action)) {
         return res.status(400).json({
@@ -292,13 +303,14 @@ function createRecommendationsRoutes(verifyTokenMiddleware, optionalVerifyTokenM
       }
 
       const uid = req.user.uid;
+      const normalizedAction = action === 'wishlist' ? 'bookmark' : action;
 
       const redisOk = await pushActivity(uid, book_id, action);
 
       proxyToAI('POST', '/activity', {
         user_id: uid,
         book_id: String(book_id),
-        action,
+        action: normalizedAction,
       }).catch(e => console.warn('[AI Proxy] /activity forward error:', e.message));
 
       res.json({ success: true, tracked: redisOk, action, book_id });

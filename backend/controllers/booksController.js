@@ -46,14 +46,48 @@ function parseGenresCell(value) {
   return [];
 }
 
+function sanitizePagination(value, fallback, min, max) {
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(parsed, min), max);
+}
+
+function withDownloadUrl(book, req) {
+  if (!book || !book.file_url || !book.id) return book;
+  const baseUrl = `${req.protocol}://${req.get('host')}`;
+  return {
+    ...book,
+    file_url: `${baseUrl}/books/${book.id}/file`,
+  };
+}
+
+function isUuidLike(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''));
+}
+
 // GET /books - List all books dengan pagination & filters
 exports.getBooks = async (req, res) => {
   try {
-    const { page = 1, limit = 10, genre, sort = 'created_at', order = 'DESC' } = req.query;
-    const offset = (page - 1) * limit;
+    const {
+      page = 1,
+      limit = 10,
+      genre,
+      search,
+      sort = 'created_at',
+      order = 'DESC',
+    } = req.query;
+    const pageNum = sanitizePagination(page, 1, 1, 100000);
+    const limitNum = sanitizePagination(limit, 10, 1, 100);
+    const offset = (pageNum - 1) * limitNum;
     
     let query = 'SELECT * FROM books WHERE is_active = true';
     const params = [];
+
+    if (search && String(search).trim()) {
+      const term = `%${String(search).trim()}%`;
+      query += ` AND (title ILIKE $${params.length + 1} OR authors::text ILIKE $${params.length + 1})`;
+      params.push(term);
+    }
 
     // Filter by genre jika ada
     if (genre) {
@@ -69,7 +103,7 @@ exports.getBooks = async (req, res) => {
     
     query += ` ORDER BY ${sortBy} ${orderBy}`;
     query += ` LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
-    params.push(limit, offset);
+    params.push(limitNum, offset);
 
     const result = await db.executeQuery(query, params);
     const rows = toRows(result);
@@ -77,33 +111,35 @@ exports.getBooks = async (req, res) => {
     // Get total count
     let countQuery = 'SELECT COUNT(*) as total FROM books WHERE is_active = true';
     const countParams = [];
+
+    if (search && String(search).trim()) {
+      const term = `%${String(search).trim()}%`;
+      countQuery += ` AND (title ILIKE $${countParams.length + 1} OR authors::text ILIKE $${countParams.length + 1})`;
+      countParams.push(term);
+    }
+
     if (genre) {
-      countQuery += ` AND $1 = ANY(genres)`;
+      countQuery += ` AND $${countParams.length + 1} = ANY(genres)`;
       countParams.push(genre);
     }
     const countResult = await db.executeQuery(countQuery, countParams);
     const countRows = toRows(countResult);
 
-    // Transform file_url to use backend endpoint instead of direct blob URL
-    const booksData = rows.map(book => {
-      if (book.file_url && book.id) {
-        return {
-          ...book,
-          file_url: `http://localhost:3000/books/${book.id}/file`
-        };
-      }
-      return book;
-    });
+    const totalItems = Number.parseInt(String(countRows[0]?.total || 0), 10) || 0;
+    const totalPages = Math.max(1, Math.ceil(totalItems / limitNum));
+    const booksData = rows.map((book) => withDownloadUrl(book, req));
 
     res.json({
       success: true,
       data: booksData,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total: parseInt(countRows[0]?.total || 0),
-        pages: Math.ceil(parseInt(countRows[0]?.total || 0) / limit)
-      }
+        page: pageNum,
+        limit: limitNum,
+        total: totalItems,
+        pages: totalPages,
+        total_items: totalItems,
+        total_pages: totalPages,
+      },
     });
   } catch (error) {
     console.error('Error fetching books:', error.message);
@@ -180,19 +216,33 @@ exports.getBookDetail = async (req, res) => {
   try {
     const { id } = req.params;
 
+    if (!isUuidLike(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid book id format',
+        error: {
+          code: 'INVALID_BOOK_ID',
+          id,
+        },
+      });
+    }
+
     const query = 'SELECT * FROM books WHERE id = $1 AND is_active = true';
     const result = await db.executeQuery(query, [id]);
     const rows = toRows(result);
 
     if (rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'Book not found' });
+      return res.status(404).json({
+        success: false,
+        message: 'Book not found',
+        error: {
+          code: 'BOOK_NOT_FOUND',
+          id,
+        },
+      });
     }
 
-        const book = rows[0];
-    // Transform file_url to use backend endpoint
-    if (book.file_url && book.id) {
-      book.file_url = `http://localhost:3000/books/${book.id}/file`;
-    }
+    const book = withDownloadUrl(rows[0], req);
 
     res.json({
       success: true,
@@ -200,6 +250,78 @@ exports.getBookDetail = async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching book detail:', error.message);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// GET /books/:id/similar - MVP similar books by genre/author
+exports.getSimilarBooks = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!isUuidLike(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid book id format',
+        error: { code: 'INVALID_BOOK_ID', id },
+      });
+    }
+
+    const seedResult = await db.executeQuery(
+      'SELECT id, authors, genres FROM books WHERE id = $1 AND is_active = true',
+      [id]
+    );
+    const seedRows = toRows(seedResult);
+
+    if (seedRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Book not found',
+        error: { code: 'BOOK_NOT_FOUND', id },
+      });
+    }
+
+    const seed = seedRows[0];
+    const genres = parseGenresCell(seed.genres);
+    const authors = parseGenresCell(seed.authors);
+
+    const conditions = [];
+    const params = [id];
+
+    for (const genre of genres.slice(0, 4)) {
+      conditions.push(`$${params.length + 1} = ANY(genres)`);
+      params.push(genre);
+    }
+
+    for (const author of authors.slice(0, 2)) {
+      conditions.push(`authors::text ILIKE $${params.length + 1}`);
+      params.push(`%${author}%`);
+    }
+
+    const whereSimilar = conditions.length > 0 ? `AND (${conditions.join(' OR ')})` : '';
+    const similarQuery = `
+      SELECT *
+      FROM books
+      WHERE is_active = true
+        AND id <> $1
+        ${whereSimilar}
+      ORDER BY avg_rating DESC, created_at DESC
+      LIMIT 5
+    `;
+
+    const similarResult = await db.executeQuery(similarQuery, params);
+    const similarRows = toRows(similarResult).map((book) => withDownloadUrl(book, req));
+
+    res.json({
+      success: true,
+      data: similarRows,
+      meta: {
+        source_book_id: id,
+        total: similarRows.length,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching similar books:', error.message);
     res.status(500).json({ success: false, message: error.message });
   }
 };
