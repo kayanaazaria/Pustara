@@ -109,6 +109,49 @@ function buildPublicIdentity(userLike) {
   };
 }
 
+const STREAK_TIME_ZONE = 'Asia/Jakarta';
+const STREAK_DAY_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: STREAK_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+function toDayKeyInTimeZone(input) {
+  if (!input) return null;
+  const date = new Date(input);
+  if (Number.isNaN(date.getTime())) return null;
+
+  const parts = STREAK_DAY_FORMATTER.formatToParts(date);
+  const year = parts.find((p) => p.type === 'year')?.value;
+  const month = parts.find((p) => p.type === 'month')?.value;
+  const day = parts.find((p) => p.type === 'day')?.value;
+  if (!year || !month || !day) return null;
+  return `${year}-${month}-${day}`;
+}
+
+function calculateConsecutiveStreak(timestamps) {
+  if (!Array.isArray(timestamps) || timestamps.length === 0) return 0;
+
+  const days = new Set();
+  for (const ts of timestamps) {
+    const key = toDayKeyInTimeZone(ts);
+    if (key) days.add(key);
+  }
+  if (days.size === 0) return 0;
+
+  let streak = 0;
+  const cursor = new Date();
+  while (true) {
+    const key = toDayKeyInTimeZone(cursor);
+    if (!key || !days.has(key)) break;
+    streak += 1;
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
+  }
+
+  return streak;
+}
+
 async function resolveActorUserId(req) {
   if (!req.user?.uid) return null;
 
@@ -149,7 +192,7 @@ function mapUserCard(user, isFollowing = false) {
 async function buildUserProfile(targetUserId, actorId = null) {
   const userRows = toRows(
     await db.executeQuery(
-      'SELECT id, username, display_name, email, bio, avatar_url, preferred_genres, created_at FROM users WHERE id = $1',
+      'SELECT id, username, display_name, email, bio, avatar_url, preferred_genres, reading_streak, total_read, created_at, updated_at FROM users WHERE id = $1',
       [targetUserId]
     )
   );
@@ -179,6 +222,8 @@ async function buildUserProfile(targetUserId, actorId = null) {
 
   let currentlyReading = [];
   let likedBooks = [];
+  let finishedCount = 0;
+  let computedStreak = 0;
 
   try {
     const readingRows = toRows(
@@ -227,6 +272,44 @@ async function buildUserProfile(targetUserId, actorId = null) {
     likedBooks = [];
   }
 
+  try {
+    const finishedRows = toRows(
+      await db.executeQuery(
+        `SELECT COUNT(*) AS total
+         FROM reading_sessions
+         WHERE user_id = $1
+           AND status = 'finished'`,
+        [targetUserId]
+      )
+    );
+    finishedCount = Number(finishedRows[0]?.total || 0);
+  } catch (_) {
+    finishedCount = 0;
+  }
+
+  try {
+    const streakRows = toRows(
+      await db.executeQuery(
+        `SELECT COALESCE(last_read_at, finished_at, started_at) AS event_time
+         FROM reading_sessions
+         WHERE user_id = $1
+           AND COALESCE(last_read_at, finished_at, started_at) IS NOT NULL
+           AND status IN ('reading', 'active', 'finished')
+         ORDER BY COALESCE(last_read_at, finished_at, started_at) DESC
+         LIMIT 400`,
+        [targetUserId]
+      )
+    );
+    computedStreak = calculateConsecutiveStreak(streakRows.map((row) => row.event_time));
+  } catch (_) {
+    computedStreak = 0;
+  }
+
+  const storedStreak = Number(user.reading_streak || 0);
+  const storedTotalRead = Number(user.total_read || 0);
+  const resolvedStreak = computedStreak > 0 ? computedStreak : Math.max(0, storedStreak);
+  const resolvedTotalRead = Math.max(0, storedTotalRead, finishedCount);
+
   return {
     id: String(user.id),
     username: identity.username,
@@ -236,7 +319,10 @@ async function buildUserProfile(targetUserId, actorId = null) {
     bio: user.bio || '',
     avatar_url: user.avatar_url || null,
     preferred_genres: parseStringArray(user.preferred_genres),
+    total_read: resolvedTotalRead,
+    reading_streak: resolvedStreak,
     created_at: user.created_at || null,
+    updated_at: user.updated_at || null,
     followers_count: followersCount,
     following_count: followingCount,
     is_following: isFollowing,

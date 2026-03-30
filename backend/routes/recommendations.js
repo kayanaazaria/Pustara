@@ -14,9 +14,9 @@ function toFiniteNumber(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function normalizeSignal(signal, fallbackLabel, fallbackWeight) {
+function normalizeSignal(signal, fallbackLabel, fallbackWeight, computedScore) {
   return {
-    score: toFiniteNumber(signal?.score, 0),
+    score: toFiniteNumber(computedScore, toFiniteNumber(signal?.score, 0)),
     weight: toFiniteNumber(signal?.weight, fallbackWeight),
     label: signal?.label || fallbackLabel,
   };
@@ -40,7 +40,13 @@ function normalizeRecommendation(rec = {}) {
 
   const hasExplicitSignals = contentScoreRaw !== undefined || collabScoreRaw !== undefined;
   const hybridScore = Math.min(1, Math.max(0, toFiniteNumber(rec.hybrid_score ?? rec.final_score, 0)));
-  const fallbackDominant = rec.dominant_signal === 'collab' ? 'collab' : 'content';
+  const dominantToken = String(rec.dominant_signal || '').toLowerCase();
+  const dominantHint = dominantToken.includes('collab') || dominantToken.includes('komunitas')
+    ? 'collab'
+    : dominantToken.includes('content') || dominantToken.includes('konten')
+      ? 'content'
+      : null;
+  const fallbackDominant = dominantHint || 'content';
 
   const contentScore = Math.min(
     1,
@@ -51,13 +57,7 @@ function normalizeRecommendation(rec = {}) {
     Math.max(0, toFiniteNumber(collabScoreRaw, hasExplicitSignals ? 0 : (fallbackDominant === 'collab' ? hybridScore : 0))),
   );
 
-  const dominant = rec.dominant_signal === 'collab'
-    ? 'collab'
-    : rec.dominant_signal === 'content'
-      ? 'content'
-      : collabScore > contentScore
-        ? 'collab'
-        : 'content';
+  const dominant = dominantHint || (collabScore > contentScore ? 'collab' : 'content');
 
   return {
     book_id: String(rec.book_id || rec.id || ''),
@@ -75,11 +75,13 @@ function normalizeRecommendation(rec = {}) {
         signalMap?.content,
         'Kemiripan konten',
         hasExplicitSignals ? 1 : (dominant === 'content' ? 1 : 0),
+        contentScore,
       ),
       collab: normalizeSignal(
         signalMap?.collab,
         'Sinyal komunitas',
         hasExplicitSignals ? 0 : (dominant === 'collab' ? 1 : 0),
+        collabScore,
       ),
     },
   };
@@ -332,15 +334,30 @@ function createRecommendationsRoutes(verifyTokenMiddleware, optionalVerifyTokenM
     '/cold-start',
     verifyTokenMiddleware,
     asyncHandler(async (req, res) => {
-      const { top_n = 10, language } = req.query;
+      const { top_n = 10, language, genres } = req.query;
       const surveyCtx = await getUserSurveyContext(req.user.uid);
       
       const params = new URLSearchParams({ n: top_n, top_n: top_n });
       if (language) params.set('language', language);
+      params.set('user_id', req.user.uid);
+
+      let requestGenres = null;
+      if (typeof genres === 'string' && genres.trim()) {
+        requestGenres = genres
+          .split(',')
+          .map((g) => g.trim())
+          .filter(Boolean);
+      }
       
       if (surveyCtx.user_gender) params.set('gender', surveyCtx.user_gender);
       if (surveyCtx.user_age_group) params.set('age_group', surveyCtx.user_age_group);
-      if (surveyCtx.preferred_genres) params.set('genres', surveyCtx.preferred_genres.join(','));
+      const preferredGenres =
+        surveyCtx.preferred_genres && surveyCtx.preferred_genres.length > 0
+          ? surveyCtx.preferred_genres
+          : requestGenres;
+      if (preferredGenres && preferredGenres.length > 0) {
+        params.set('genres', preferredGenres.join(','));
+      }
 
       const result = await proxyToAI('GET', `/recommendations/cold-start?${params.toString()}`);
       res.json({ success: true, data: normalizeRecommendationsPayload(result) });
