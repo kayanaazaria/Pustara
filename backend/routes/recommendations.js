@@ -14,9 +14,9 @@ function toFiniteNumber(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function normalizeSignal(signal, fallbackLabel, fallbackWeight) {
+function normalizeSignal(signal, fallbackLabel, fallbackWeight, computedScore) {
   return {
-    score: toFiniteNumber(signal?.score, 0),
+    score: toFiniteNumber(computedScore, toFiniteNumber(signal?.score, 0)),
     weight: toFiniteNumber(signal?.weight, fallbackWeight),
     label: signal?.label || fallbackLabel,
   };
@@ -40,7 +40,13 @@ function normalizeRecommendation(rec = {}) {
 
   const hasExplicitSignals = contentScoreRaw !== undefined || collabScoreRaw !== undefined;
   const hybridScore = Math.min(1, Math.max(0, toFiniteNumber(rec.hybrid_score ?? rec.final_score, 0)));
-  const fallbackDominant = rec.dominant_signal === 'collab' ? 'collab' : 'content';
+  const dominantToken = String(rec.dominant_signal || '').toLowerCase();
+  const dominantHint = dominantToken.includes('collab') || dominantToken.includes('komunitas')
+    ? 'collab'
+    : dominantToken.includes('content') || dominantToken.includes('konten')
+      ? 'content'
+      : null;
+  const fallbackDominant = dominantHint || 'content';
 
   const contentScore = Math.min(
     1,
@@ -51,13 +57,7 @@ function normalizeRecommendation(rec = {}) {
     Math.max(0, toFiniteNumber(collabScoreRaw, hasExplicitSignals ? 0 : (fallbackDominant === 'collab' ? hybridScore : 0))),
   );
 
-  const dominant = rec.dominant_signal === 'collab'
-    ? 'collab'
-    : rec.dominant_signal === 'content'
-      ? 'content'
-      : collabScore > contentScore
-        ? 'collab'
-        : 'content';
+  const dominant = dominantHint || (collabScore > contentScore ? 'collab' : 'content');
 
   return {
     book_id: String(rec.book_id || rec.id || ''),
@@ -75,11 +75,13 @@ function normalizeRecommendation(rec = {}) {
         signalMap?.content,
         'Kemiripan konten',
         hasExplicitSignals ? 1 : (dominant === 'content' ? 1 : 0),
+        contentScore,
       ),
       collab: normalizeSignal(
         signalMap?.collab,
         'Sinyal komunitas',
         hasExplicitSignals ? 0 : (dominant === 'collab' ? 1 : 0),
+        collabScore,
       ),
     },
   };
