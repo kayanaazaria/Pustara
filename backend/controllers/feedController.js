@@ -62,7 +62,11 @@ async function resolveActorUserId(req) {
   return String(actor.data.id);
 }
 
-async function fetchActivityRows(actorUserId, limit) {
+async function fetchActivityRows(actorUserId, limit, includeNetwork = false) {
+  const actorScope = includeNetwork
+    ? `IN (SELECT following_id FROM follows WHERE follower_id = $1 UNION SELECT $1)`
+    : `= $1`;
+
   const readingQuery = `SELECT
       b.id, b.title, b.authors, b.genres, b.cover_url, b.avg_rating, b.year, b.pages,
       rs.id as session_id, rs.status, rs.current_page, rs.total_pages,
@@ -73,10 +77,7 @@ async function fetchActivityRows(actorUserId, limit) {
     FROM reading_sessions rs
     JOIN books b ON b.id = rs.book_id
     JOIN users u ON u.id = rs.user_id
-    WHERE rs.user_id IN (
-      SELECT following_id FROM follows WHERE follower_id = $1
-      UNION SELECT $1
-    )
+    WHERE rs.user_id ${actorScope}
       AND b.is_active = true
       AND rs.status IN ('reading', 'active', 'finished')`;
 
@@ -92,10 +93,7 @@ async function fetchActivityRows(actorUserId, limit) {
     FROM wishlist w
     JOIN books b ON b.id = w.book_id
     JOIN users u ON u.id = w.user_id
-    WHERE w.user_id IN (
-      SELECT following_id FROM follows WHERE follower_id = $1
-      UNION SELECT $1
-    )
+    WHERE w.user_id ${actorScope}
       AND b.is_active = true`;
 
   const wishlistQueryCreatedAt = `SELECT
@@ -110,10 +108,7 @@ async function fetchActivityRows(actorUserId, limit) {
     FROM wishlist w
     JOIN books b ON b.id = w.book_id
     JOIN users u ON u.id = w.user_id
-    WHERE w.user_id IN (
-      SELECT following_id FROM follows WHERE follower_id = $1
-      UNION SELECT $1
-    )
+    WHERE w.user_id ${actorScope}
       AND b.is_active = true`;
 
   const unionQuery = (wishlistQuery) => `
@@ -148,8 +143,10 @@ exports.getMyFeedActivity = async (req, res) => {
     }
 
     const limit = Math.min(Number(req.query.limit) || 20, 100);
+    const includeNetwork = String(req.query.include_network || req.query.scope || '').toLowerCase() === '1'
+      || String(req.query.include_network || req.query.scope || '').toLowerCase() === 'network';
 
-    const activityRows = await fetchActivityRows(actorUserId, limit);
+    const activityRows = await fetchActivityRows(actorUserId, limit, includeNetwork);
 
     const activities = activityRows.map((row) => ({
       type: row.status === 'finished' ? 'finish' : row.status === 'wishlist' ? 'wishlist' : 'read',
@@ -175,6 +172,7 @@ exports.getMyFeedActivity = async (req, res) => {
       data: {
         activities,
         total: activities.length,
+        scope: includeNetwork ? 'network' : 'self',
       },
     });
   } catch (error) {
