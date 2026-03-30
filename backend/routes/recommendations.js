@@ -38,9 +38,19 @@ function normalizeRecommendation(rec = {}) {
   const collabScoreRaw =
     signalMap?.collab?.score ?? signalScoreFromArray(rec?.signals, 'collab') ?? signalScoreFromArray(rec?.signals, 'komunitas');
 
-  const contentScore = Math.min(1, Math.max(0, toFiniteNumber(contentScoreRaw, 0)));
-  const collabScore = Math.min(1, Math.max(0, toFiniteNumber(collabScoreRaw, 0)));
+  const hasExplicitSignals = contentScoreRaw !== undefined || collabScoreRaw !== undefined;
   const hybridScore = Math.min(1, Math.max(0, toFiniteNumber(rec.hybrid_score ?? rec.final_score, 0)));
+  const fallbackDominant = rec.dominant_signal === 'collab' ? 'collab' : 'content';
+
+  const contentScore = Math.min(
+    1,
+    Math.max(0, toFiniteNumber(contentScoreRaw, hasExplicitSignals ? 0 : (fallbackDominant === 'content' ? hybridScore : 0))),
+  );
+  const collabScore = Math.min(
+    1,
+    Math.max(0, toFiniteNumber(collabScoreRaw, hasExplicitSignals ? 0 : (fallbackDominant === 'collab' ? hybridScore : 0))),
+  );
+
   const dominant = rec.dominant_signal === 'collab'
     ? 'collab'
     : rec.dominant_signal === 'content'
@@ -64,12 +74,12 @@ function normalizeRecommendation(rec = {}) {
       content: normalizeSignal(
         signalMap?.content,
         'Kemiripan konten',
-        1,
+        hasExplicitSignals ? 1 : (dominant === 'content' ? 1 : 0),
       ),
       collab: normalizeSignal(
         signalMap?.collab,
         'Sinyal komunitas',
-        0,
+        hasExplicitSignals ? 0 : (dominant === 'collab' ? 1 : 0),
       ),
     },
   };
