@@ -5,6 +5,7 @@
 
 const db = require('../config/database');
 const UserService = require('../services/userService');
+const { pushActivity } = require('../services/redis');
 
 function toRows(result) {
   if (Array.isArray(result)) return result;
@@ -264,6 +265,13 @@ exports.borrowBook = async (req, res) => {
 
     await ensureReadingSession(actorUserId, bookId);
 
+    // Feed AI activity stream so this interaction counts toward recommendation phase.
+    if (req.user?.uid) {
+      pushActivity(req.user.uid, bookId, 'read').catch((err) => {
+        console.warn('[Shelf] pushActivity(read) warning:', err?.message || err);
+      });
+    }
+
     const loan = loanRows[0] || {};
     res.status(201).json({
       success: true,
@@ -378,6 +386,13 @@ exports.addToWishlist = async (req, res) => {
           [actorUserId, bookId]
         )
       );
+    }
+
+    // Feed AI activity stream so wishlist contributes to user interaction count.
+    if (req.user?.uid) {
+      pushActivity(req.user.uid, bookId, 'wishlist').catch((err) => {
+        console.warn('[Shelf] pushActivity(wishlist) warning:', err?.message || err);
+      });
     }
 
     res.status(201).json({

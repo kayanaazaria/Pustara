@@ -332,15 +332,30 @@ function createRecommendationsRoutes(verifyTokenMiddleware, optionalVerifyTokenM
     '/cold-start',
     verifyTokenMiddleware,
     asyncHandler(async (req, res) => {
-      const { top_n = 10, language } = req.query;
+      const { top_n = 10, language, genres } = req.query;
       const surveyCtx = await getUserSurveyContext(req.user.uid);
       
       const params = new URLSearchParams({ n: top_n, top_n: top_n });
       if (language) params.set('language', language);
+      params.set('user_id', req.user.uid);
+
+      let requestGenres = null;
+      if (typeof genres === 'string' && genres.trim()) {
+        requestGenres = genres
+          .split(',')
+          .map((g) => g.trim())
+          .filter(Boolean);
+      }
       
       if (surveyCtx.user_gender) params.set('gender', surveyCtx.user_gender);
       if (surveyCtx.user_age_group) params.set('age_group', surveyCtx.user_age_group);
-      if (surveyCtx.preferred_genres) params.set('genres', surveyCtx.preferred_genres.join(','));
+      const preferredGenres =
+        surveyCtx.preferred_genres && surveyCtx.preferred_genres.length > 0
+          ? surveyCtx.preferred_genres
+          : requestGenres;
+      if (preferredGenres && preferredGenres.length > 0) {
+        params.set('genres', preferredGenres.join(','));
+      }
 
       const result = await proxyToAI('GET', `/recommendations/cold-start?${params.toString()}`);
       res.json({ success: true, data: normalizeRecommendationsPayload(result) });
