@@ -14,6 +14,33 @@ function toFiniteNumber(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function normalizeTrendingPages(book = {}) {
+  return Math.max(
+    0,
+    toFiniteNumber(
+      book.pages
+        ?? book.page_count
+        ?? book.num_pages
+        ?? book.number_of_pages,
+      0,
+    ),
+  );
+}
+
+function normalizeTrendingScore(book = {}) {
+  const raw = toFiniteNumber(
+    book.trending_score
+      ?? book.trendingScore
+      ?? book.score
+      ?? book.trend_score,
+    0,
+  );
+
+  // FastAPI may emit normalized 0..1 score; convert to readable scale for UI.
+  if (raw > 0 && raw <= 1) return raw * 100;
+  return Math.max(0, raw);
+}
+
 function normalizeSignal(signal, fallbackLabel, fallbackWeight, computedScore) {
   return {
     score: toFiniteNumber(computedScore, toFiniteNumber(signal?.score, 0)),
@@ -120,10 +147,10 @@ function normalizeTrendingPayload(result = {}) {
         : [],
     description: typeof book.description === 'string' ? book.description : '',
     year: book.year ? String(book.year) : '',
-    pages: toFiniteNumber(book.pages, 0),
+    pages: normalizeTrendingPages(book),
     avg_rating: toFiniteNumber(book.avg_rating, 0),
     cover_url: book.cover_url || null,
-    trending_score: toFiniteNumber(book.trending_score ?? book.score, 0),
+    trending_score: normalizeTrendingScore(book),
     reason_primary: book.reason_primary || 'Trending di Pustara',
   }));
 

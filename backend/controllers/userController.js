@@ -130,6 +130,16 @@ function toDayKeyInTimeZone(input) {
   return `${year}-${month}-${day}`;
 }
 
+function previousDayKey(dayKey) {
+  if (!dayKey) return null;
+  const [year, month, day] = dayKey.split('-').map((value) => Number(value));
+  if (!year || !month || !day) return null;
+
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() - 1);
+  return toDayKeyInTimeZone(date);
+}
+
 function calculateConsecutiveStreak(timestamps) {
   if (!Array.isArray(timestamps) || timestamps.length === 0) return 0;
 
@@ -141,12 +151,11 @@ function calculateConsecutiveStreak(timestamps) {
   if (days.size === 0) return 0;
 
   let streak = 0;
-  const cursor = new Date();
+  let cursorKey = toDayKeyInTimeZone(new Date());
   while (true) {
-    const key = toDayKeyInTimeZone(cursor);
-    if (!key || !days.has(key)) break;
+    if (!cursorKey || !days.has(cursorKey)) break;
     streak += 1;
-    cursor.setUTCDate(cursor.getUTCDate() - 1);
+    cursorKey = previousDayKey(cursorKey);
   }
 
   return streak;
@@ -594,7 +603,13 @@ exports.getRecommendedUsers = async (req, res) => {
     let whereClause = '';
 
     if (actorId) {
-      whereClause = 'WHERE u.id <> $1';
+      whereClause = `WHERE u.id <> $1
+        AND NOT EXISTS (
+          SELECT 1
+          FROM follows f
+          WHERE f.follower_id = $1
+            AND f.following_id = u.id
+        )`;
       params.push(actorId);
     }
 
@@ -613,14 +628,6 @@ exports.getRecommendedUsers = async (req, res) => {
       )
     );
 
-    let followingSet = new Set();
-    if (actorId) {
-      const followingRows = toRows(
-        await db.executeQuery('SELECT following_id FROM follows WHERE follower_id = $1', [actorId])
-      );
-      followingSet = new Set(followingRows.map((row) => String(row.following_id)));
-    }
-
     const data = recommendationRows.map((user) => ({
       id: String(user.id),
       ...buildPublicIdentity(user),
@@ -630,7 +637,7 @@ exports.getRecommendedUsers = async (req, res) => {
       followers_count: Number(user.followers_count || 0),
       total_read: Number(user.total_read || 0),
       reading_streak: Number(user.reading_streak || 0),
-      is_following: followingSet.has(String(user.id)),
+      is_following: false,
     }));
 
     res.json({

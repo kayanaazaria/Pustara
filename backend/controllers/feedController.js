@@ -64,7 +64,7 @@ async function resolveActorUserId(req) {
 
 async function fetchActivityRows(actorUserId, limit, includeNetwork = false) {
   const actorScope = includeNetwork
-    ? `IN (SELECT following_id FROM follows WHERE follower_id = $1 UNION SELECT $1)`
+    ? `IN (SELECT following_id FROM follows WHERE follower_id = $1)`
     : `= $1`;
 
   const readingQuery = `SELECT
@@ -151,6 +151,7 @@ exports.getMyFeedActivity = async (req, res) => {
     const activities = activityRows.map((row) => ({
       type: row.status === 'finished' ? 'finish' : row.status === 'wishlist' ? 'wishlist' : 'read',
       book: formatBook(row),
+      actor_id: row.actor_id ? String(row.actor_id) : null,
       status: row.status === 'finished' ? 'finished' : row.status === 'wishlist' ? 'wishlist' : 'reading',
       current_page: Number(row.current_page || 0),
       total_pages: Number(row.total_pages || 0),
