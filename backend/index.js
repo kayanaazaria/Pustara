@@ -181,13 +181,14 @@ async function startServer() {
     // Auto-reindex PustarAI (optional, don't crash if fails)
     console.log("\n🤖 Attempting to initialize PustarAI...");
     try {
-      const cronSecret = process.env.CRON_SECRET || process.env.RI_SECRET || 'pustara-cron-2025';
-      
-      const reindexRes = await fetch(`${aiUrl}/reindex?key=${cronSecret}`, {
-        method: 'GET',
+      const cronSecret = process.env.CRON_SECRET || process.env.RI_SECRET || 'PUSTARAbrakadaba23';
+
+      const reindexRes = await fetch(`${aiUrl}/reindex`, {
+        method: 'POST',
         headers: {
-          'Authorization': `Bearer ${process.env.HF_TOKEN || ''}`
-        }
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ secret: cronSecret }),
       });
       
       if (reindexRes.ok) {

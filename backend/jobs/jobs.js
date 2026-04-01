@@ -17,13 +17,16 @@ const log = (level, msg, ...args) => {
 async function rebuildModels() {
   log('info', '🔄 Triggering model rebuild …');
   try {
-    const res = await axios.get(
-      `${FASTAPI_URL}/reindex?key=${CRON_SECRET}`,
-      { 
+    const reindexSecret = process.env.RI_SECRET || CRON_SECRET || 'PUSTARAbrakadaba23';
+    const res = await axios.post(
+      `${FASTAPI_URL}/reindex`,
+      { secret: reindexSecret },
+      {
         timeout: 5 * 60 * 1000,
         headers: {
-          'Authorization': `Bearer ${process.env.HF_TOKEN}` 
-        }
+          Authorization: `Bearer ${process.env.HF_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
       }
     );
     const { catalog_size, model_b, timestamp } = res.data;

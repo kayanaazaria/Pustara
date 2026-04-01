@@ -4,6 +4,7 @@ const userController = require('../controllers/userController');
 const router = express.Router();
 
 router.get('/recommendations', userController.getRecommendedUsers);
+router.get('/username-availability', userController.checkUsernameAvailability);
 router.get('/me', userController.getMyProfile);
 router.get('/me/following', userController.getMyFollowing);
 router.get('/me/followers', userController.getMyFollowers);
