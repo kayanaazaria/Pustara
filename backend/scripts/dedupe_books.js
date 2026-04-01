@@ -154,11 +154,13 @@ async function triggerReindex() {
 
   const attempts = [];
   for (const key of candidates) {
-    const response = await fetch(`${aiUrl}/reindex?key=${encodeURIComponent(key)}`, {
-      method: 'GET',
+    const response = await fetch(`${aiUrl}/reindex`, {
+      method: 'POST',
       headers: {
+        'Content-Type': 'application/json',
         Authorization: `Bearer ${process.env.HF_TOKEN || ''}`,
       },
+      body: JSON.stringify({ secret: key }),
     });
 
     const text = await response.text();

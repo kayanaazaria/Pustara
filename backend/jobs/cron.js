@@ -216,12 +216,16 @@ async function resolveBookDbId(bookRef) {
 cron.schedule('0 3 * * *', async () => {
   log('REBUILD', 'Starting AI model rebuild process...');
   try {
-    // Changed to GET and moved secret to URL parameters
-    const res = await axios.get(
-      `${FASTAPI_URL}/reindex?key=${CRON_SECRET}`, 
-      { 
+    const reindexSecret = CRON_SECRET || 'PUSTARAbrakadaba23';
+    const res = await axios.post(
+      `${FASTAPI_URL}/reindex`,
+      { secret: reindexSecret },
+      {
         timeout: 300000,
-        headers: { 'Authorization': `Bearer ${HF_TOKEN}` } // Access to Private Space
+        headers: {
+          Authorization: `Bearer ${HF_TOKEN}`,
+          'Content-Type': 'application/json',
+        }, // Access to Private Space
       }
     );
     log('REBUILD', `✅ Success: ${JSON.stringify(res.data)}`);

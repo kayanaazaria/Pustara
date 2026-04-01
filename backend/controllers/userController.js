@@ -140,6 +140,21 @@ function previousDayKey(dayKey) {
   return toDayKeyInTimeZone(date);
 }
 
+function dayKeyToUtcDate(dayKey) {
+  if (!dayKey) return null;
+  const [year, month, day] = String(dayKey).split('-').map((value) => Number(value));
+  if (!year || !month || !day) return null;
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+function diffDays(dayA, dayB) {
+  const a = dayKeyToUtcDate(dayA);
+  const b = dayKeyToUtcDate(dayB);
+  if (!a || !b) return Number.NaN;
+  const MS_PER_DAY = 24 * 60 * 60 * 1000;
+  return Math.round((a.getTime() - b.getTime()) / MS_PER_DAY);
+}
+
 function calculateConsecutiveStreak(timestamps) {
   if (!Array.isArray(timestamps) || timestamps.length === 0) return 0;
 
@@ -150,12 +165,20 @@ function calculateConsecutiveStreak(timestamps) {
   }
   if (days.size === 0) return 0;
 
-  let streak = 0;
-  let cursorKey = toDayKeyInTimeZone(new Date());
-  while (true) {
-    if (!cursorKey || !days.has(cursorKey)) break;
-    streak += 1;
-    cursorKey = previousDayKey(cursorKey);
+  const sortedDays = Array.from(days).sort((a, b) => {
+    const da = dayKeyToUtcDate(a);
+    const db = dayKeyToUtcDate(b);
+    return (db?.getTime() || 0) - (da?.getTime() || 0);
+  });
+
+  let streak = 1;
+  for (let i = 1; i < sortedDays.length; i += 1) {
+    const diff = diffDays(sortedDays[i - 1], sortedDays[i]);
+    if (diff === 1) {
+      streak += 1;
+      continue;
+    }
+    break;
   }
 
   return streak;
@@ -386,6 +409,55 @@ exports.getMyProfile = async (req, res) => {
   } catch (error) {
     console.error('Error fetching self profile:', error.message);
     res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.checkUsernameAvailability = async (req, res) => {
+  try {
+    const rawUsername = typeof req.query?.username === 'string' ? req.query.username.trim() : '';
+    const normalizedUsername = rawUsername
+      .toLowerCase()
+      .replace(/[^a-z0-9_\-\s.]/g, ' ')
+      .replace(/[.\-\s]+/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_+|_+$/g, '');
+
+    if (!normalizedUsername) {
+      return res.status(400).json({
+        success: false,
+        available: false,
+        message: 'Username wajib diisi.',
+      });
+    }
+
+    if (normalizedUsername.length < 3 || normalizedUsername.length > 24) {
+      return res.status(400).json({
+        success: false,
+        available: false,
+        message: 'Username harus 3-24 karakter.',
+      });
+    }
+
+    const rows = toRows(
+      await db.executeQuery(
+        'SELECT id FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1',
+        [normalizedUsername]
+      )
+    );
+
+    return res.json({
+      success: true,
+      available: rows.length === 0,
+      username: normalizedUsername,
+      message: rows.length === 0 ? 'Username tersedia.' : 'Username sudah digunakan.',
+    });
+  } catch (error) {
+    console.error('Error checking username availability:', error.message);
+    return res.status(500).json({
+      success: false,
+      available: false,
+      message: 'Gagal memeriksa username.',
+    });
   }
 };
 
