@@ -82,7 +82,8 @@ async function executeQuery(query, params = []) {
   if (isDummy) {
     if (!pgPool) throw new Error('Neon DB not initialized. Call initializeDatabase() first');
     const result = await pgPool.query(query, params);
-    return result.rows;
+    // Return in same format as Azure for compatibility
+    return { rows: result.rows };
   }
 
   // Azure SQL logic
@@ -129,11 +130,11 @@ async function executeQuery(query, params = []) {
   // 4. Convert ILIKE to LIKE for case-insensitive search
   azureQuery = azureQuery.replace(/\bILIKE\b/gi, 'LIKE');
   
-  const result = await request.query(azureQuery);
+  const azureResult = await request.query(azureQuery);
   
   // Return in same format as pg library for compatibility
   // Controllers expect result.rows, but mssql uses result.recordset
-  return { rows: result.recordset };
+  return { rows: azureResult.recordset };
 }
 
 /**

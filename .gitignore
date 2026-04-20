@@ -54,6 +54,10 @@ node_modules/
 .env.local
 .env.*.local
 
+# DEVELOPMENT: Local file uploads (use cloud storage in production)
+uploads/
+backend/uploads/
+
 # Firebase service account JSON (SENSITIVE - NEVER COMMIT)
 **/pustara-kw-firebase-adminsdk-*.json
 *.json  # If using generic names for service accounts

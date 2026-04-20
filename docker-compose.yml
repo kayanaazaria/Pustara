@@ -10,7 +10,7 @@ services:
     env_file:
       - ./backend/.env
     environment:
-      - NODE_ENV=production
+      - NODE_ENV=dummy
       - FIREBASE_PROJECT_ID=pustara-kw
       - FIREBASE_API_KEY=AIzaSyD0Wz2CsxmDAj1LqPkNbEyx3hnFUoCnBMs
       - PORT=3000

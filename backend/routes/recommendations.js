@@ -140,15 +140,36 @@ async function proxyToAI(method, path, body = null) {
   if (body) options.body = JSON.stringify(body);
 
   console.log(`[AI Proxy] ${method} → ${url}`);
-  const response = await fetch(url, options);
-  const data     = await response.json();
+  
+  try {
+    const response = await fetch(url, options);
+    
+    // Check if response is JSON
+    const contentType = response.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      const text = await response.text();
+      console.error(`[AI Proxy] Non-JSON response (${response.status}):`, text.substring(0, 200));
+      const err = new Error(`AI service returned non-JSON response (status: ${response.status}). Service may be unreachable.`);
+      err.status = response.status;
+      throw err;
+    }
 
-  if (!response.ok) {
-    const err = new Error(data.detail || `AI service error: ${response.status}`);
-    err.status = response.status;
-    throw err;
+    const data = await response.json();
+
+    if (!response.ok) {
+      const err = new Error(data.detail || `AI service error: ${response.status}`);
+      err.status = response.status;
+      throw err;
+    }
+    
+    return data;
+  } catch (error) {
+    if (error instanceof SyntaxError && error.message.includes('JSON')) {
+      console.error(`[AI Proxy] JSON parse error:`, error.message);
+      throw new Error('AI service response is not valid JSON. Service may be down.');
+    }
+    throw error;
   }
-  return data;
 }
 
 /**

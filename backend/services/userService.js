@@ -41,8 +41,8 @@ class UserService {
         `, [uid, username, email, displayName || username]);
       }
 
-      console.log(`✅ User created: ${uid}`);
-      return { success: true, data: rows[0] };
+      console.log(`✅ User created: ${uid}`, rows.rows[0]);
+      return { success: true, data: rows.rows[0] };
     } catch (error) {
       console.error(`❌ createUser error:`, error.message);
       return { success: false, error: error.message };
@@ -55,7 +55,7 @@ class UserService {
   static async getUserByUid(uid) {
     try {
       const rows = await executeQuery(`SELECT * FROM users WHERE firebase_uid = $1`, [uid]);
-      return { success: true, data: rows[0] || null };
+      return { success: true, data: rows.rows[0] || null };
     } catch (error) {
       console.error('getUserByUid error:', error.message);
       return { success: false, error: error.message };
@@ -68,7 +68,7 @@ class UserService {
   static async getUserByEmail(email) {
     try {
       const rows = await executeQuery(`SELECT * FROM users WHERE email = $1`, [email]);
-      return { success: true, data: rows[0] || null };
+      return { success: true, data: rows.rows[0] || null };
     } catch (error) {
       return { success: false, error: error.message };
     }
@@ -102,7 +102,7 @@ class UserService {
         );
       }
 
-      return { success: true, data: rows[0] };
+      return { success: true, data: rows.rows[0] };
     } catch (error) {
       console.error('❌ updateUser error:', error.message);
       return { success: false, error: error.message };

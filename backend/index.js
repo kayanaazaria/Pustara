@@ -18,6 +18,10 @@ if (typeof global.crypto === 'undefined') {
 
 require("dotenv").config();
 
+console.log("📂 Working directory:", process.cwd());
+console.log("📂 .env exists at:", require('fs').existsSync('.env'));
+console.log("📝 FIREBASE_API_KEY loaded:", !!process.env.FIREBASE_API_KEY);
+
 const isDummyMode = process.env.NODE_ENV === 'dummy';
 const dbType = isDummyMode ? 'Neon PostgreSQL' : 'Azure SQL';
 const aiUrl = process.env.FASTAPI_URL || 'http://localhost:8001';
@@ -53,7 +57,13 @@ require('./jobs/cron'); //init cron jobs for ai-related tasks
 const app = express();
 
 // CORS setup
+const fs = require('fs');
+const path = require('path');
+const LOG_FILE = path.join(__dirname, 'debug-requests.log');
 app.use((req, res, next) => {
+  const logMsg = `[${new Date().toISOString()}] ${req.method} ${req.path}\n`;
+  console.log(`[REQUEST] ${req.method} ${req.path}`);
+  fs.appendFileSync(LOG_FILE, logMsg);
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -66,6 +76,13 @@ app.use((req, res, next) => {
 
 // Middleware
 app.use(express.json());
+
+// REQUEST LOGGING MIDDLEWARE
+app.use((req, res, next) => {
+  console.log(`[REQUEST] ${req.method} ${req.path} - From: ${req.headers.origin || 'unknown'}`);
+  next();
+});
+
 app.use(fileUpload({
   limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max
   abortOnLimit: true,
@@ -81,10 +98,17 @@ app.use(cors({
 }));
 
 // Setup Auth
-const authProvider = new FirebaseProvider();
-const authService = new AuthService(authProvider);
-const verifyTokenMiddleware = createVerifyTokenMiddleware(authService);
-const optionalVerifyTokenMiddleware = createOptionalVerifyTokenMiddleware(authService);
+let authService, verifyTokenMiddleware, optionalVerifyTokenMiddleware;
+try {
+  const authProvider = new FirebaseProvider();
+  authService = new AuthService(authProvider);
+  verifyTokenMiddleware = createVerifyTokenMiddleware(authService);
+  optionalVerifyTokenMiddleware = createOptionalVerifyTokenMiddleware(authService);
+  console.log('✅ Auth services initialized successfully');
+} catch (authErr) {
+  console.error('❌ Auth initialization failed:', authErr.message);
+  process.exit(1);
+}
 
 // ==========================================
 // ROUTES
@@ -109,7 +133,12 @@ app.get("/api/protected", verifyTokenMiddleware, (req, res) => {
 // Recommendations Routes
 app.use('/recommendations', createRecommendationsRoutes(verifyTokenMiddleware, optionalVerifyTokenMiddleware));
 
-// Books Routes (dengan Azure Blob file handling)
+// DEVELOPMENT: Serve local uploaded files
+const uploadsDir = path.join(__dirname, 'uploads');
+app.use('/uploads', express.static(uploadsDir));
+console.log(`📁 Static uploads served from: ${uploadsDir}`);
+
+// Books Routes (dengan local filesystem file handling untuk development)
 app.use('/', booksRoutes);
 
 // Books Admin Routes (protected by verifyToken + authorizeAdmin)
@@ -129,7 +158,12 @@ app.use('/cron', require('./routes/cronRoutes'));
 // ERROR HANDLING
 // ==========================================
 app.use((err, req, res, next) => {
-  console.error("Error:", err.message);
+  console.error("[ERROR HANDLER]", {
+    message: err.message,
+    stack: err.stack,
+    path: req.path,
+    method: req.method
+  });
   res.status(500).json({ success: false, error: CONFIG.ERRORS.INTERNAL_SERVER_ERROR });
 });
 

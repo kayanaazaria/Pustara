@@ -3,11 +3,23 @@ const express = require('express');
 const router = express.Router();
 const booksController = require('../controllers/booksController');
 
+// DEVELOPMENT: Upload form page (no auth)
+router.get('/upload-book', booksController.getUploadForm);
+
 // PUBLIC ROUTES - Read only
+router.get('/genres', booksController.getGenres);
+router.get('/books/trending', booksController.getTrendingBooks);
 router.get('/books', booksController.getBooks);
 router.get('/books/search', booksController.searchBooks);
 router.get('/books/:id', booksController.getBookDetail);
 router.get('/books/:id/file', booksController.downloadBookFile);
+router.get('/books/:bookId/reviews', booksController.getBookReviews);
+
+// DEVELOPMENT: Upload endpoint (no auth required)
+router.post('/books/upload-dev', booksController.uploadBookDev);
+
+// Reviews endpoint (public, can add auth later)
+router.post('/reviews', booksController.createOrUpdateReview);
 
 // Admin routes will be mounted separately with auth middleware in index.js
 // router.post('/books', authorizeAdmin, booksController.createBook);

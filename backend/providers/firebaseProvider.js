@@ -9,6 +9,11 @@
 const admin = require("../config/firebase");
 
 class FirebaseProvider {
+  constructor() {
+    console.log('[FIREBASE] FirebaseProvider constructor called');
+    console.log('[FIREBASE] process.env.FIREBASE_API_KEY at construct time:', process.env.FIREBASE_API_KEY ? 'SET' : 'UNDEFINED');
+  }
+
   /**
    * Verify ID token dari Firebase
    * @param {string} token - Firebase ID token
@@ -124,13 +129,22 @@ class FirebaseProvider {
   async signInWithEmailPassword(email, password) {
     try {
       const apiKey = process.env.FIREBASE_API_KEY;
+      
+      console.log('[FIREBASE] ===== signInWithEmailPassword called =====');
+      console.log('[FIREBASE] Email:', email);
+      console.log('[FIREBASE] API Key Status:', apiKey ? 'LOADED (length: ' + apiKey.length + ')' : 'UNDEFINED');
+      
       if (!apiKey) {
+        console.error('[FIREBASE] ❌ ERROR: FIREBASE_API_KEY is undefined!');
         return {
           success: false,
           error: "FIREBASE_API_KEY not configured",
         };
       }
 
+      console.log('[FIREBASE] ✅ API Key exists, attempting Firebase sign-in...');
+
+      console.log(`[FIREBASE] Attempting sign-in for ${email}`);
       const signInUrl = `https://www.googleapis.com/identitytoolkit/v3/relyingparty/verifyPassword?key=${apiKey}`;
 
       const response = await fetch(signInUrl, {
@@ -144,14 +158,18 @@ class FirebaseProvider {
       });
 
       const data = await response.json();
+      console.log(`[FIREBASE] Response status: ${response.status}`, { hasIdToken: !!data.idToken, hasError: !!data.error });
 
       if (!data.idToken) {
+        const errorMsg = data.error?.message || "Sign in failed";
+        console.error(`[FIREBASE] Sign-in failed for ${email}:`, errorMsg);
         return {
           success: false,
-          error: data.error?.message || "Sign in failed",
+          error: errorMsg,
         };
       }
 
+      console.log(`[FIREBASE] ✅ Sign-in successful for ${email}`);
       return {
         success: true,
         data: {
@@ -162,6 +180,7 @@ class FirebaseProvider {
         },
       };
     } catch (error) {
+      console.error(`[FIREBASE] Exception during sign-in:`, error.message);
       return {
         success: false,
         error: error.message,

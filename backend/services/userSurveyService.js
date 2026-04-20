@@ -19,29 +19,40 @@ class UserSurveyService {
       const userId = userResult.data.id;
 
       const { gender, age, favoriteGenre } = surveyData;
-      const favoriteGenreStr = Array.isArray(favoriteGenre) ? favoriteGenre.join(', ') : favoriteGenre;
+      
+      // Convert favoriteGenre to valid JSON array
+      let favoriteGenreJson = [];
+      if (Array.isArray(favoriteGenre)) {
+        favoriteGenreJson = favoriteGenre;
+      } else if (typeof favoriteGenre === 'string' && favoriteGenre.trim()) {
+        // Convert comma-separated string or single string to array
+        favoriteGenreJson = favoriteGenre.includes(',') 
+          ? favoriteGenre.split(',').map(g => g.trim())
+          : [favoriteGenre.trim()];
+      }
+      const favoriteGenreStr = JSON.stringify(favoriteGenreJson);
       
       let query = '';
 
       if (isDummy) {
         query = `
-          INSERT INTO UserSurvey (userId, gender, age, favoriteGenre) 
+          INSERT INTO "UserSurvey" ("userId", gender, age, "favoriteGenre") 
           VALUES ($1, $2, $3, $4)
-          ON CONFLICT (userId) DO UPDATE 
+          ON CONFLICT ("userId") DO UPDATE 
           SET gender = EXCLUDED.gender, 
               age = EXCLUDED.age, 
-              favoriteGenre = EXCLUDED.favoriteGenre, 
-              updatedAt = NOW()
+              "favoriteGenre" = EXCLUDED."favoriteGenre", 
+              updated_at = NOW()
         `;
       } else {
         query = `
-          MERGE UserSurvey AS target
-          USING (SELECT $1 AS userId, $2 AS gender, $3 AS age, $4 AS favoriteGenre) AS source
-          ON (target.userId = source.userId)
+          MERGE "UserSurvey" AS target
+          USING (SELECT $1 AS "userId", $2 AS gender, $3 AS age, $4 AS "favoriteGenre") AS source
+          ON (target."userId" = source."userId")
           WHEN MATCHED THEN
-              UPDATE SET gender = source.gender, age = source.age, favoriteGenre = source.favoriteGenre, updatedAt = GETDATE()
+              UPDATE SET gender = source.gender, age = source.age, "favoriteGenre" = source."favoriteGenre", updated_at = GETDATE()
           WHEN NOT MATCHED THEN
-              INSERT (userId, gender, age, favoriteGenre) VALUES (source.userId, source.gender, source.age, source.favoriteGenre);
+              INSERT ("userId", gender, age, "favoriteGenre") VALUES (source."userId", source.gender, source.age, source."favoriteGenre");
         `;
       }
 
@@ -63,8 +74,8 @@ class UserSurveyService {
       const userTable = isDummy ? 'users' : 'Users';
       
       const query = `
-        SELECT us.* FROM UserSurvey us
-        JOIN ${userTable} u ON us.userId = u.id
+        SELECT us.* FROM "UserSurvey" us
+        JOIN ${userTable} u ON us."userId" = u.id
         WHERE u.${userCol} = $1
       `;
 
@@ -88,25 +99,42 @@ class UserSurveyService {
         return { success: false, error: 'No valid fields to update' };
       }
 
-      const setClause = fields.map((f, i) => `${f} = $${i + 2}`).join(', ');
-      const values = [userId, ...fields.map(f => updates[f])];
+      const setClause = fields.map((f, i) => `"${f}" = $${i + 2}`).join(', ');
+      
+      // Convert favoriteGenre to valid JSON array if present
+      const values = [userId, ...fields.map(f => {
+        if (f === 'favoriteGenre') {
+          const favoriteGenre = updates[f];
+          if (Array.isArray(favoriteGenre)) {
+            return JSON.stringify(favoriteGenre);
+          } else if (typeof favoriteGenre === 'string' && favoriteGenre.trim()) {
+            const genreArray = favoriteGenre.includes(',') 
+              ? favoriteGenre.split(',').map(g => g.trim())
+              : [favoriteGenre.trim()];
+            return JSON.stringify(genreArray);
+          }
+          return JSON.stringify([]);
+        }
+        return updates[f];
+      })];
+      
       const timeFunc = isDummy ? 'NOW()' : 'GETDATE()';
       
       let query = '';
 
       if (isDummy) {
         query = `
-          UPDATE UserSurvey
-          SET ${setClause}, updatedAt = ${timeFunc}
-          WHERE userId = $1
+          UPDATE "UserSurvey"
+          SET ${setClause}, updated_at = ${timeFunc}
+          WHERE "userId" = $1
           RETURNING *
         `;
       } else {
         query = `
-          UPDATE UserSurvey
-          SET ${setClause}, updatedAt = ${timeFunc}
-          WHERE userId = $1;
-          SELECT * FROM UserSurvey WHERE userId = $1;
+          UPDATE "UserSurvey"
+          SET ${setClause}, updated_at = ${timeFunc}
+          WHERE "userId" = $1;
+          SELECT * FROM "UserSurvey" WHERE "userId" = $1;
         `;
       }
 
@@ -128,9 +156,9 @@ class UserSurveyService {
       
       // Ambil detail survey yang relevan sesuai skema
       const query = `
-        SELECT u.*, us.favoriteGenre, us.age, us.gender
+        SELECT u.*, us."favoriteGenre", us.age, us.gender
         FROM ${userTable} u
-        LEFT JOIN UserSurvey us ON u.id = us.userId
+        LEFT JOIN "UserSurvey" us ON u.id = us."userId"
         WHERE u.${userCol} = $1
       `;
 
