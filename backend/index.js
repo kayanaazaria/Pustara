@@ -16,7 +16,8 @@ if (typeof global.crypto === 'undefined') {
   global.crypto = require('crypto').webcrypto;
 }
 
-require("dotenv").config();
+const path = require('path');
+require("dotenv").config({ path: path.join(__dirname, '.env') });
 
 const nodeEnv = (process.env.NODE_ENV || '').toLowerCase();
 const isNeonMode = nodeEnv === 'neon' || process.env.NEON_CLOUD_MODE === 'true';
