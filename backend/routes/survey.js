@@ -70,6 +70,28 @@ function createSurveyRoutes(verifyTokenMiddleware) {
     })
   );
 
+  // GET /survey/status - Check if user has completed/skipped survey
+  router.get(
+    "/status",
+    verifyTokenMiddleware,
+    asyncHandler(async (req, res) => {
+      const uid = req.user.uid;
+      const result = await UserSurveyService.getSurveyStatus(uid);
+      res.status(result.success ? 200 : 400).json(result);
+    })
+  );
+
+  // POST /survey/skip - Persist survey skip to DB so user is not prompted again
+  router.post(
+    "/skip",
+    verifyTokenMiddleware,
+    asyncHandler(async (req, res) => {
+      const uid = req.user.uid;
+      const result = await UserSurveyService.skipSurvey(uid);
+      res.status(result.success ? 200 : 400).json(result);
+    })
+  );
+
   // GET /survey/profile - Get user profile with survey data
   router.get(
     "/profile",
@@ -89,7 +111,7 @@ function createSurveyRoutes(verifyTokenMiddleware) {
       const uid = req.user.uid;
       
       // Get user first to get userId
-      const userService = require("./userService");
+      const userService = require("../services/userService");
       const userResult = await userService.getUserByUid(uid);
       
       if (!userResult.success || !userResult.data) {

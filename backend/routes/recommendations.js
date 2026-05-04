@@ -14,9 +14,36 @@ function toFiniteNumber(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function normalizeSignal(signal, fallbackLabel, fallbackWeight) {
+function normalizeTrendingPages(book = {}) {
+  return Math.max(
+    0,
+    toFiniteNumber(
+      book.pages
+        ?? book.page_count
+        ?? book.num_pages
+        ?? book.number_of_pages,
+      0,
+    ),
+  );
+}
+
+function normalizeTrendingScore(book = {}) {
+  const raw = toFiniteNumber(
+    book.trending_score
+      ?? book.trendingScore
+      ?? book.score
+      ?? book.trend_score,
+    0,
+  );
+
+  // FastAPI may emit normalized 0..1 score; convert to readable scale for UI.
+  if (raw > 0 && raw <= 1) return raw * 100;
+  return Math.max(0, raw);
+}
+
+function normalizeSignal(signal, fallbackLabel, fallbackWeight, computedScore) {
   return {
-    score: toFiniteNumber(signal?.score, 0),
+    score: toFiniteNumber(computedScore, toFiniteNumber(signal?.score, 0)),
     weight: toFiniteNumber(signal?.weight, fallbackWeight),
     label: signal?.label || fallbackLabel,
   };
@@ -38,16 +65,26 @@ function normalizeRecommendation(rec = {}) {
   const collabScoreRaw =
     signalMap?.collab?.score ?? signalScoreFromArray(rec?.signals, 'collab') ?? signalScoreFromArray(rec?.signals, 'komunitas');
 
-  const contentScore = Math.min(1, Math.max(0, toFiniteNumber(contentScoreRaw, 0)));
-  const collabScore = Math.min(1, Math.max(0, toFiniteNumber(collabScoreRaw, 0)));
+  const hasExplicitSignals = contentScoreRaw !== undefined || collabScoreRaw !== undefined;
   const hybridScore = Math.min(1, Math.max(0, toFiniteNumber(rec.hybrid_score ?? rec.final_score, 0)));
-  const dominant = rec.dominant_signal === 'collab'
+  const dominantToken = String(rec.dominant_signal || '').toLowerCase();
+  const dominantHint = dominantToken.includes('collab') || dominantToken.includes('komunitas')
     ? 'collab'
-    : rec.dominant_signal === 'content'
+    : dominantToken.includes('content') || dominantToken.includes('konten')
       ? 'content'
-      : collabScore > contentScore
-        ? 'collab'
-        : 'content';
+      : null;
+  const fallbackDominant = dominantHint || 'content';
+
+  const contentScore = Math.min(
+    1,
+    Math.max(0, toFiniteNumber(contentScoreRaw, hasExplicitSignals ? 0 : (fallbackDominant === 'content' ? hybridScore : 0))),
+  );
+  const collabScore = Math.min(
+    1,
+    Math.max(0, toFiniteNumber(collabScoreRaw, hasExplicitSignals ? 0 : (fallbackDominant === 'collab' ? hybridScore : 0))),
+  );
+
+  const dominant = dominantHint || (collabScore > contentScore ? 'collab' : 'content');
 
   return {
     book_id: String(rec.book_id || rec.id || ''),
@@ -64,12 +101,14 @@ function normalizeRecommendation(rec = {}) {
       content: normalizeSignal(
         signalMap?.content,
         'Kemiripan konten',
-        1,
+        hasExplicitSignals ? 1 : (dominant === 'content' ? 1 : 0),
+        contentScore,
       ),
       collab: normalizeSignal(
         signalMap?.collab,
         'Sinyal komunitas',
-        0,
+        hasExplicitSignals ? 0 : (dominant === 'collab' ? 1 : 0),
+        collabScore,
       ),
     },
   };
@@ -108,10 +147,10 @@ function normalizeTrendingPayload(result = {}) {
         : [],
     description: typeof book.description === 'string' ? book.description : '',
     year: book.year ? String(book.year) : '',
-    pages: toFiniteNumber(book.pages, 0),
+    pages: normalizeTrendingPages(book),
     avg_rating: toFiniteNumber(book.avg_rating, 0),
     cover_url: book.cover_url || null,
-    trending_score: toFiniteNumber(book.trending_score ?? book.score, 0),
+    trending_score: normalizeTrendingScore(book),
     reason_primary: book.reason_primary || 'Trending di Pustara',
   }));
 
@@ -179,6 +218,15 @@ async function getUserSurveyContext(uid) {
   try {
     const result = await UserSurveyService.getSurveyByUid(uid);
     if (result.success && result.data) {
+      if (result.data.survey_status === 'skipped') {
+        return {
+          user_gender: null,
+          user_age: null,
+          user_age_group: null,
+          preferred_genres: null,
+        };
+      }
+
       let ageGroup = null;
       const exactAge = parseInt(result.data.age);
       if (!isNaN(exactAge)) {
@@ -196,6 +244,8 @@ async function getUserSurveyContext(uid) {
       } else if (Array.isArray(result.data.favoriteGenre)) {
         genresArray = result.data.favoriteGenre;
       }
+
+      genresArray = genresArray.filter((genre) => genre && genre !== '__SKIPPED__');
 
       return {
         user_gender:      result.data.gender || null, // "L", "P", "X"
@@ -303,7 +353,7 @@ function createRecommendationsRoutes(verifyTokenMiddleware, optionalVerifyTokenM
     verifyTokenMiddleware,
     asyncHandler(async (req, res) => {
       const { book_id, action } = req.body;
-      const validActions = ['view', 'read', 'like', 'bookmark', 'share', 'review'];
+      const validActions = ['view', 'read', 'like', 'bookmark', 'wishlist', 'share', 'review'];
 
       if (!book_id || !validActions.includes(action)) {
         return res.status(400).json({
@@ -313,13 +363,14 @@ function createRecommendationsRoutes(verifyTokenMiddleware, optionalVerifyTokenM
       }
 
       const uid = req.user.uid;
+      const normalizedAction = action === 'wishlist' ? 'bookmark' : action;
 
       const redisOk = await pushActivity(uid, book_id, action);
 
       proxyToAI('POST', '/activity', {
         user_id: uid,
         book_id: String(book_id),
-        action,
+        action: normalizedAction,
       }).catch(e => console.warn('[AI Proxy] /activity forward error:', e.message));
 
       res.json({ success: true, tracked: redisOk, action, book_id });
@@ -331,15 +382,30 @@ function createRecommendationsRoutes(verifyTokenMiddleware, optionalVerifyTokenM
     '/cold-start',
     verifyTokenMiddleware,
     asyncHandler(async (req, res) => {
-      const { top_n = 10, language } = req.query;
+      const { top_n = 10, language, genres } = req.query;
       const surveyCtx = await getUserSurveyContext(req.user.uid);
       
       const params = new URLSearchParams({ n: top_n, top_n: top_n });
       if (language) params.set('language', language);
+      params.set('user_id', req.user.uid);
+
+      let requestGenres = null;
+      if (typeof genres === 'string' && genres.trim()) {
+        requestGenres = genres
+          .split(',')
+          .map((g) => g.trim())
+          .filter(Boolean);
+      }
       
       if (surveyCtx.user_gender) params.set('gender', surveyCtx.user_gender);
       if (surveyCtx.user_age_group) params.set('age_group', surveyCtx.user_age_group);
-      if (surveyCtx.preferred_genres) params.set('genres', surveyCtx.preferred_genres.join(','));
+      const preferredGenres =
+        surveyCtx.preferred_genres && surveyCtx.preferred_genres.length > 0
+          ? surveyCtx.preferred_genres
+          : requestGenres;
+      if (preferredGenres && preferredGenres.length > 0) {
+        params.set('genres', preferredGenres.join(','));
+      }
 
       const result = await proxyToAI('GET', `/recommendations/cold-start?${params.toString()}`);
       res.json({ success: true, data: normalizeRecommendationsPayload(result) });

@@ -18,16 +18,13 @@ if (typeof global.crypto === 'undefined') {
 
 require("dotenv").config();
 
-console.log("📂 Working directory:", process.cwd());
-console.log("📂 .env exists at:", require('fs').existsSync('.env'));
-console.log("📝 FIREBASE_API_KEY loaded:", !!process.env.FIREBASE_API_KEY);
-
-const isDummyMode = process.env.NODE_ENV === 'dummy';
-const dbType = isDummyMode ? 'Neon PostgreSQL' : 'Azure SQL';
+const nodeEnv = (process.env.NODE_ENV || '').toLowerCase();
+const isNeonMode = nodeEnv === 'neon' || process.env.NEON_CLOUD_MODE === 'true';
+const dbType = isNeonMode ? 'Neon PostgreSQL (Production Cloud)' : 'Azure SQL';
 const aiUrl = process.env.FASTAPI_URL || 'http://localhost:8001';
 
 console.log("🔥 DEBUG URL:", aiUrl);
-console.log(`📊 Database Mode: ${isDummyMode ? 'DUMMY (Neon PG)' : 'PRODUCTION (Azure SQL)'}`);
+console.log(`📊 Database Mode: ${isNeonMode ? 'NEON PRODUCTION CLOUD' : 'PRODUCTION (Azure SQL)'}`);
 console.log(`🔐 NODE_ENV: ${process.env.NODE_ENV || 'not set'}`);
 
 const express = require("express");
@@ -40,7 +37,7 @@ const { createVerifyTokenMiddleware, createOptionalVerifyTokenMiddleware } = req
 const { authorizeAdmin } = require("./middleware/adminAuth");
 const { createAuthRoutes } = require("./routes/auth");
 const createSurveyRoutes = require("./routes/survey");
-const { initializeDatabase, createUsersTable, createUserSurveyTable } = require("./config/database");
+const { initializeDatabase, ensureNeonShelfSchemaCompatibility, createUsersTable, createUserSurveyTable } = require("./config/database");
 
 // Routes
 const createRecommendationsRoutes = require('./routes/recommendations');
@@ -48,6 +45,9 @@ const booksRoutes = require('./routes/booksRoutes');
 const booksAdminRoutes = require('./routes/booksAdminRoutes');
 const readingSessionRoutes = require('./routes/readingSessionRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
+const userRoutes = require('./routes/userRoutes');
+const shelfRoutes = require('./routes/shelfRoutes');
+const feedRoutes = require('./routes/feedRoutes');
 
 require('./jobs/cron'); //init cron jobs for ai-related tasks
 
@@ -57,13 +57,7 @@ require('./jobs/cron'); //init cron jobs for ai-related tasks
 const app = express();
 
 // CORS setup
-const fs = require('fs');
-const path = require('path');
-const LOG_FILE = path.join(__dirname, 'debug-requests.log');
 app.use((req, res, next) => {
-  const logMsg = `[${new Date().toISOString()}] ${req.method} ${req.path}\n`;
-  console.log(`[REQUEST] ${req.method} ${req.path}`);
-  fs.appendFileSync(LOG_FILE, logMsg);
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -76,13 +70,6 @@ app.use((req, res, next) => {
 
 // Middleware
 app.use(express.json());
-
-// REQUEST LOGGING MIDDLEWARE
-app.use((req, res, next) => {
-  console.log(`[REQUEST] ${req.method} ${req.path} - From: ${req.headers.origin || 'unknown'}`);
-  next();
-});
-
 app.use(fileUpload({
   limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max
   abortOnLimit: true,
@@ -98,17 +85,10 @@ app.use(cors({
 }));
 
 // Setup Auth
-let authService, verifyTokenMiddleware, optionalVerifyTokenMiddleware;
-try {
-  const authProvider = new FirebaseProvider();
-  authService = new AuthService(authProvider);
-  verifyTokenMiddleware = createVerifyTokenMiddleware(authService);
-  optionalVerifyTokenMiddleware = createOptionalVerifyTokenMiddleware(authService);
-  console.log('✅ Auth services initialized successfully');
-} catch (authErr) {
-  console.error('❌ Auth initialization failed:', authErr.message);
-  process.exit(1);
-}
+const authProvider = new FirebaseProvider();
+const authService = new AuthService(authProvider);
+const verifyTokenMiddleware = createVerifyTokenMiddleware(authService);
+const optionalVerifyTokenMiddleware = createOptionalVerifyTokenMiddleware(authService);
 
 // ==========================================
 // ROUTES
@@ -133,12 +113,7 @@ app.get("/api/protected", verifyTokenMiddleware, (req, res) => {
 // Recommendations Routes
 app.use('/recommendations', createRecommendationsRoutes(verifyTokenMiddleware, optionalVerifyTokenMiddleware));
 
-// DEVELOPMENT: Serve local uploaded files
-const uploadsDir = path.join(__dirname, 'uploads');
-app.use('/uploads', express.static(uploadsDir));
-console.log(`📁 Static uploads served from: ${uploadsDir}`);
-
-// Books Routes (dengan local filesystem file handling untuk development)
+// Books Routes (dengan Azure Blob file handling)
 app.use('/', booksRoutes);
 
 // Books Admin Routes (protected by verifyToken + authorizeAdmin)
@@ -147,6 +122,15 @@ app.use('/admin/books', verifyTokenMiddleware, authorizeAdmin, booksAdminRoutes)
 
 // Reading Session Routes (track user reading progress)
 app.use('/reading', verifyTokenMiddleware, readingSessionRoutes);
+
+// Shelf Routes (loans, reading sessions, wishlist)
+app.use('/shelf', verifyTokenMiddleware, shelfRoutes);
+
+// Feed Routes (activity, notifications, recommendations)
+app.use('/feed', verifyTokenMiddleware, feedRoutes);
+
+// User Social/Profile Routes (allow optional auth for actor-aware responses)
+app.use('/users', optionalVerifyTokenMiddleware, userRoutes);
 
 // Analytics Routes (stats & dashboard)
 app.use('/stats', analyticsRoutes);
@@ -158,12 +142,7 @@ app.use('/cron', require('./routes/cronRoutes'));
 // ERROR HANDLING
 // ==========================================
 app.use((err, req, res, next) => {
-  console.error("[ERROR HANDLER]", {
-    message: err.message,
-    stack: err.stack,
-    path: req.path,
-    method: req.method
-  });
+  console.error("Error:", err.message);
   res.status(500).json({ success: false, error: CONFIG.ERRORS.INTERNAL_SERVER_ERROR });
 });
 
@@ -176,6 +155,11 @@ async function startServer() {
   try {
     console.log("\n⏳ Initializing Database...");
     await initializeDatabase();
+    try {
+      await ensureNeonShelfSchemaCompatibility();
+    } catch (schemaError) {
+      console.warn(`⚠️  Shelf schema compatibility check skipped: ${schemaError.message}`);
+    }
     console.log("✅ Database initialized successfully\n");
     
     await createUsersTable();
@@ -197,13 +181,14 @@ async function startServer() {
     // Auto-reindex PustarAI (optional, don't crash if fails)
     console.log("\n🤖 Attempting to initialize PustarAI...");
     try {
-      const cronSecret = process.env.CRON_SECRET || process.env.RI_SECRET || 'pustara-cron-2025';
-      
-      const reindexRes = await fetch(`${aiUrl}/reindex?key=${cronSecret}`, {
-        method: 'GET',
+      const cronSecret = process.env.CRON_SECRET || process.env.RI_SECRET || 'PUSTARAbrakadaba23';
+
+      const reindexRes = await fetch(`${aiUrl}/reindex`, {
+        method: 'POST',
         headers: {
-          'Authorization': `Bearer ${process.env.HF_TOKEN || ''}`
-        }
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ secret: cronSecret }),
       });
       
       if (reindexRes.ok) {

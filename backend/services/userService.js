@@ -1,10 +1,10 @@
 /**
  * User Service — Database Operations
- * Support Neon PostgreSQL (dummy) dan Azure SQL (prod)
+ * Support Neon PostgreSQL (Production Cloud) dan Azure SQL (prod)
  * Query ditulis dalam PostgreSQL syntax — executeQuery() handle konversi ke Azure
  */
 
-const { executeQuery, isDummy } = require('../config/database');
+const { executeQuery, isNeon } = require('../config/database');
 
 class UserService {
   /**
@@ -19,7 +19,7 @@ class UserService {
       console.log(`📝 Creating user: uid=${uid}, email=${email}`);
 
       let rows;
-      if (isDummy) {
+      if (isNeon) {
         // Neon: users punya kolom firebase_uid, username, display_name
         const username = email.split('@')[0].toLowerCase().replace(/[^a-z0-9_]/g, '_');
         rows = await executeQuery(`
@@ -41,8 +41,8 @@ class UserService {
         `, [uid, username, email, displayName || username]);
       }
 
-      console.log(`✅ User created: ${uid}`, rows.rows[0]);
-      return { success: true, data: rows.rows[0] };
+      console.log(`✅ User created: ${uid}`);
+      return { success: true, data: rows[0] };
     } catch (error) {
       console.error(`❌ createUser error:`, error.message);
       return { success: false, error: error.message };
@@ -54,8 +54,9 @@ class UserService {
    */
   static async getUserByUid(uid) {
     try {
-      const rows = await executeQuery(`SELECT * FROM users WHERE firebase_uid = $1`, [uid]);
-      return { success: true, data: rows.rows[0] || null };
+      const col  = isNeon ? 'firebase_uid' : 'uid';
+      const rows = await executeQuery(`SELECT * FROM ${isNeon ? 'users' : 'Users'} WHERE ${col} = $1`, [uid]);
+      return { success: true, data: rows[0] || null };
     } catch (error) {
       console.error('getUserByUid error:', error.message);
       return { success: false, error: error.message };
@@ -67,8 +68,8 @@ class UserService {
    */
   static async getUserByEmail(email) {
     try {
-      const rows = await executeQuery(`SELECT * FROM users WHERE email = $1`, [email]);
-      return { success: true, data: rows.rows[0] || null };
+      const rows = await executeQuery(`SELECT * FROM ${isNeon ? 'users' : 'Users'} WHERE email = $1`, [email]);
+      return { success: true, data: rows[0] || null };
     } catch (error) {
       return { success: false, error: error.message };
     }
@@ -76,9 +77,9 @@ class UserService {
 
   static async updateUser(uid, updates) {
     try {
-      const allowed = isDummy
-        ? ['display_name', 'avatar_url', 'bio', 'preferred_genres']
-        : ['display_name', 'avatar_url', 'bio', 'preferred_genres'];
+      const allowed = isNeon
+        ? ['display_name', 'username', 'avatar_url', 'bio', 'preferred_genres']
+        : ['display_name', 'username', 'avatar_url', 'bio', 'preferred_genres'];
 
       const fields = Object.keys(updates).filter(k => allowed.includes(k));
       if (!fields.length) return { success: false, error: 'No valid fields to update' };
@@ -87,7 +88,7 @@ class UserService {
       const values    = [uid, ...fields.map(f => updates[f])];
       
       let rows;
-      if (isDummy) {
+      if (isNeon) {
         // Neon (PostgreSQL) mode
         rows = await executeQuery(
           `UPDATE users SET ${setClause}, updated_at = NOW() WHERE firebase_uid = $1 RETURNING *`,
@@ -102,7 +103,7 @@ class UserService {
         );
       }
 
-      return { success: true, data: rows.rows[0] };
+      return { success: true, data: rows[0] };
     } catch (error) {
       console.error('❌ updateUser error:', error.message);
       return { success: false, error: error.message };

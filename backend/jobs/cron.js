@@ -1,8 +1,8 @@
 const cron   = require('node-cron');
 const axios  = require('axios');
 const { Redis } = require('@upstash/redis'); 
-// Import isDummy to make queries compatible with both Neon and Azure
-const { executeQuery, isDummy } = require('../config/database');   
+// Import isNeon to make queries compatible with both Neon and Azure
+const { executeQuery, isNeon } = require('../config/database');   
 
 const FASTAPI_URL = process.env.FASTAPI_URL;
 const HF_TOKEN    = process.env.HF_TOKEN;
@@ -35,7 +35,7 @@ function makeSyntheticIdentity(firebaseUid) {
 }
 
 async function ensureUserFromFirebaseUid(firebaseUid) {
-  if (!isDummy || !firebaseUid) return null;
+  if (!isNeon || !firebaseUid) return null;
   const { username, email } = makeSyntheticIdentity(firebaseUid);
 
   try {
@@ -216,12 +216,16 @@ async function resolveBookDbId(bookRef) {
 cron.schedule('0 3 * * *', async () => {
   log('REBUILD', 'Starting AI model rebuild process...');
   try {
-    // Changed to GET and moved secret to URL parameters
-    const res = await axios.get(
-      `${FASTAPI_URL}/reindex?key=${CRON_SECRET}`, 
-      { 
+    const reindexSecret = CRON_SECRET || 'PUSTARAbrakadaba23';
+    const res = await axios.post(
+      `${FASTAPI_URL}/reindex`,
+      { secret: reindexSecret },
+      {
         timeout: 300000,
-        headers: { 'Authorization': `Bearer ${HF_TOKEN}` } // Access to Private Space
+        headers: {
+          Authorization: `Bearer ${HF_TOKEN}`,
+          'Content-Type': 'application/json',
+        }, // Access to Private Space
       }
     );
     log('REBUILD', `✅ Success: ${JSON.stringify(res.data)}`);
@@ -278,7 +282,7 @@ cron.schedule('0 */6 * * *', async () => {
     let skipped = 0;
     let hasError = false;
     // Set time function based on DB type
-    const timeFunc = isDummy ? 'NOW()' : 'GETDATE()';
+    const timeFunc = isNeon ? 'NOW()' : 'GETDATE()';
 
     const ACTION_WEIGHTS = { view: 1, read: 3, like: 5, bookmark: 4, wishlist: 4, share: 2, review: 8, search_intent: 1 };
 
@@ -360,7 +364,7 @@ cron.schedule('0 */6 * * *', async () => {
 /*
 cron.schedule('0 * * * *', async () => {
   log('LOANS', 'Checking overdue loans...');
-  const timeFunc = isDummy ? 'NOW()' : 'GETDATE()';
+  const timeFunc = isNeon ? 'NOW()' : 'GETDATE()';
   try {
     const updated = await executeQuery(`
       UPDATE loans SET status = 'overdue'

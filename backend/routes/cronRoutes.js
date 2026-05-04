@@ -1,6 +1,6 @@
 const express = require('express');
 const { Redis } = require('@upstash/redis');
-const { executeQuery, isDummy } = require('../config/database');
+const { executeQuery, isNeon } = require('../config/database');
 
 const router = express.Router();
 
@@ -37,7 +37,7 @@ function makeSyntheticIdentity(firebaseUid) {
 }
 
 async function ensureUserFromFirebaseUid(firebaseUid) {
-  if (!isDummy || !firebaseUid) return null;
+  if (!isNeon || !firebaseUid) return null;
   const { username, email } = makeSyntheticIdentity(firebaseUid);
 
   try {
@@ -260,8 +260,8 @@ router.get('/sync', async (req, res) => {
     return res.status(401).json({ success: false, message: 'Hayo mau ngapain? 🤨' });
   }
 
-  console.log(`🔄 [CRON] Starting Redis to DB sync... (Target DB: ${isDummy ? 'Neon/Postgres' : 'Azure/SQL Server'})`);
-  const timeFunc = isDummy ? 'NOW()' : 'GETDATE()';
+  console.log(`🔄 [CRON] Starting Redis to DB sync... (Target DB: ${isNeon ? 'Neon/Postgres' : 'Azure/SQL Server'})`);
+  const timeFunc = isNeon ? 'NOW()' : 'GETDATE()';
   let syncedCount = 0;
   let skippedCount = 0;
   let skippedInvalid = 0;
@@ -413,7 +413,7 @@ router.get('/sync', async (req, res) => {
       cleared: shouldClear && !hasError && keyType === 'list',
       stream_cursor_before: streamCursorBefore,
       stream_cursor_after: streamCursorAfter,
-      db_target: isDummy ? 'Neon' : 'Azure SQL'
+      db_target: isNeon ? 'Neon' : 'Azure SQL'
     });
 
   } catch (error) {

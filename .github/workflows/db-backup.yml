@@ -1,0 +1,64 @@
+name: Scheduled DB Backup
+
+on:
+  schedule:
+    - cron: '0 0 * * 1-5'
+    - cron: '0 */8 * * 6,0'
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install pg_dump client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Create compressed dump
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "DATABASE_URL secret is missing" >&2
+            exit 1
+          fi
+          mkdir -p backups
+          stamp=$(date -u +'%Y-%m-%dT%H-%M-%SZ')
+          out="backups/pustara-backup-${stamp}.sql.gz"
+          pg_dump --no-owner --no-privileges "$DATABASE_URL" | gzip -9 > "$out"
+          ls -lh backups
+
+      - name: Encrypt backup (AES-256 + PBKDF2)
+        env:
+          BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+        run: |
+          if [ -z "$BACKUP_ENCRYPTION_KEY" ]; then
+            echo "BACKUP_ENCRYPTION_KEY secret is missing" >&2
+            exit 1
+          fi
+          latest_dump=$(ls -1t backups/*.sql.gz | head -n 1)
+          encrypted_out="${latest_dump}.enc"
+
+          openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 -md sha256 \
+            -in "$latest_dump" \
+            -out "$encrypted_out" \
+            -pass env:BACKUP_ENCRYPTION_KEY
+
+          sha256sum "$encrypted_out" > "${encrypted_out}.sha256"
+          rm -f "$latest_dump"
+          ls -lh backups
+
+      - name: Upload backup artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: db-backup-${{ github.run_id }}
+          path: |
+            backups/*.sql.gz.enc
+            backups/*.sql.gz.enc.sha256
+          retention-days: 14
