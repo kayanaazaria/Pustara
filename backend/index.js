@@ -155,6 +155,9 @@ async function startServer() {
   
   try {
     console.log("\n⏳ Initializing Database...");
+    console.log(`   NODE_ENV: ${process.env.NODE_ENV}`);
+    console.log(`   DATABASE_URL set: ${!!process.env.DATABASE_URL}`);
+    
     await initializeDatabase();
     try {
       await ensureNeonShelfSchemaCompatibility();
@@ -167,9 +170,10 @@ async function startServer() {
     const surveyTableReady = await createUserSurveyTable();
     dbConnected = true;
   } catch (dbError) {
-    console.warn("\n⚠️  Database initialization failed (running in offline mode):");
-    console.warn(`   ${dbError.message}`);
-    console.warn("   You can still use the API with limited functionality\n");
+    console.error("\n❌ Database initialization FAILED:");
+    console.error(`   Error: ${dbError.message}`);
+    console.error(`   Stack: ${dbError.stack}`);
+    console.error("   ⚠️  API endpoints that need database will return 500 errors\n");
   }
   
   // Start server even if DB failed

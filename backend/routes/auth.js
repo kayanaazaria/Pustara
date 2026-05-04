@@ -13,11 +13,8 @@ const { createCaptchaMiddleware } = require("../middleware/captcha");
  * Catches errors and passes to error handler
  */
 const asyncHandler = (fn) => (req, res, next) => {
-  return Promise.resolve(fn(req, res, next)).catch((err) => {
-    console.error(`[ROUTE ERROR] ${req.method} ${req.path}:`, {
-      message: err.message,
-      stack: err.stack
-    });
+  Promise.resolve(fn(req, res, next)).catch((err) => {
+    console.error(`Route error: ${err.message}`);
     res.status(500).json({ success: false, error: CONFIG.ERRORS.INTERNAL_SERVER_ERROR });
   });
 };
@@ -29,7 +26,6 @@ const asyncHandler = (fn) => (req, res, next) => {
  * @returns {Router} Express router
  */
 function createAuthRoutes(authService, verifyTokenMiddleware) {
-  console.log('[AUTH ROUTES] createAuthRoutes function called');
   const router = express.Router();
   const UserService = require("../services/userService");
   const authRateLimiter = createIPRateLimiter(
@@ -37,7 +33,6 @@ function createAuthRoutes(authService, verifyTokenMiddleware) {
     CONFIG.RATE_LIMIT.AUTH.max
   );
   const captchaMiddleware = createCaptchaMiddleware();
-  console.log('[AUTH ROUTES] Router created and middleware initialized');
 
   // POST /auth/signup - Register new user
   router.post(
@@ -53,13 +48,12 @@ function createAuthRoutes(authService, verifyTokenMiddleware) {
   // POST /auth/signin - Login user
   router.post(
     "/signin",
-    // authRateLimiter, // Temporarily disabled for debugging
-    // captchaMiddleware, // Temporarily disabled for debugging
+    authRateLimiter,
+    captchaMiddleware,
     asyncHandler(async (req, res) => {
-      console.log('[AUTH/SIGNIN] ======= SIGNIN ROUTE CALLED =======');
-      console.log('[AUTH/SIGNIN] Email:', req.body.email);
+      console.log(`📝 [AUTH/SIGNIN] Request received:`, { email: req.body.email, hasPassword: !!req.body.password, hasCaptcha: !!req.body.captchaToken });
       const result = await authService.signIn(req.body.email, req.body.password);
-      console.log('[AUTH/SIGNIN] Result:', { success: result.success, status: result.status });
+      console.log(`✅ [AUTH/SIGNIN] Response:`, { status: result.status, success: result.success });
       res.status(result.status).json(result);
     })
   );
@@ -91,48 +85,8 @@ function createAuthRoutes(authService, verifyTokenMiddleware) {
     "/me",
     verifyTokenMiddleware,
     asyncHandler(async (req, res) => {
-      const uid = req.user.uid;
-      console.log('[AUTH/ME] ======= /auth/me CALLED =======');
-      console.log('[AUTH/ME] UID:', uid);
-      
-      // Get user from database (returns UUID id field)
-      const userResult = await UserService.getUserByUid(uid);
-      console.log('[AUTH/ME] getUserByUid result:', JSON.stringify(userResult, null, 2));
-      
-      if (userResult.success && userResult.data) {
-        console.log('[AUTH/ME] User found in DB, returning:', userResult.data.id);
-        // User exists in database
-        return res.status(200).json({
-          success: true,
-          user: userResult.data
-        });
-      }
-      
-      console.log('[AUTH/ME] User not in DB, creating...');
-      // User not in database, create it
-      const firebaseUser = await authService.getUserProfile(uid);
-      console.log('[AUTH/ME] Firebase user:', firebaseUser);
-      
-      if (firebaseUser.success) {
-        const { email, displayName } = firebaseUser.user;
-        console.log('[AUTH/ME] Creating user with email:', email);
-        const createResult = await UserService.createUser(uid, email, displayName);
-        console.log('[AUTH/ME] createUser result:', JSON.stringify(createResult, null, 2));
-        
-        if (createResult.success) {
-          console.log('[AUTH/ME] User created, returning:', createResult.data.id);
-          return res.status(200).json({
-            success: true,
-            user: createResult.data
-          });
-        }
-      }
-      
-      console.log('[AUTH/ME] ERROR: Failed to get or create user');
-      res.status(500).json({
-        success: false,
-        message: 'Failed to get or create user'
-      });
+      const result = await authService.getUserProfile(req.user.uid);
+      res.status(result.status).json(result);
     })
   );
 

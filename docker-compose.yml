@@ -1,4 +1,23 @@
 services:
+  # PUSTARA Frontend Service
+  pustara-frontend:
+    build:
+      context: ../pustara-fe
+      dockerfile: ./Dockerfile
+    container_name: pustara-frontend
+    ports:
+      - "3001:3001"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:3000
+      - NODE_ENV=production
+    volumes:
+      - ../pustara-fe:/app:delegated
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - pustara-backend
+    restart: always
+
   # PUSTARA Backend Service
   pustara-backend:
     build:

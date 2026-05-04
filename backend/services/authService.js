@@ -103,9 +103,11 @@ class AuthService {
       };
     }
 
+    console.log(`[AUTH] Attempting signUp for ${email}`);
     const result = await this.provider.createUser(email, password);
 
     if (!result.success) {
+      console.log(`[AUTH] ❌ createUser failed:`, result.error);
       return {
         success: false,
         error: result.error || "Sign up failed",
@@ -113,6 +115,7 @@ class AuthService {
       };
     }
 
+    console.log(`[AUTH] ✅ Firebase account created for ${email}`);
     // Save user to Azure SQL Database
     const dbResult = await UserService.createUser(result.data.uid, result.data.email);
 
@@ -149,9 +152,11 @@ class AuthService {
       };
     }
 
+    console.log(`[AUTH] Attempting signIn for ${email}`);
     const result = await this.provider.signInWithEmailPassword(email, password);
 
     if (!result.success) {
+      console.log(`[AUTH] ❌ signInWithEmailPassword failed:`, result.error);
       return {
         success: false,
         error: result.error || "Sign in failed",
@@ -159,6 +164,7 @@ class AuthService {
       };
     }
 
+    console.log(`[AUTH] ✅ Firebase auth succeeded for ${email}`);
     // Fetch user data dari Azure SQL Database
     const uid = result.data.uid;
     const dbResult = await UserService.getUserByUid(uid);

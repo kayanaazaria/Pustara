@@ -156,14 +156,17 @@ function getClientIp(req) {
 function createCaptchaMiddleware() {
   return async (req, res, next) => {
     if (shouldBypassCaptchaForLocalTesting(req)) {
+      console.log(`[CAPTCHA] ⏭️ Bypassed for local testing`);
       return next();
     }
 
     const token = req.body?.captchaToken;
     const remoteIp = getClientIp(req);
+    console.log(`[CAPTCHA] Verifying token:`, { hasToken: !!token, ip: remoteIp });
     const result = await verifyTurnstileToken(token, remoteIp);
 
     if (!result.success) {
+      console.log(`[CAPTCHA] ❌ Verification failed:`, result.error);
       return res.status(400).json({
         success: false,
         error: result.error || CONFIG.ERRORS.CAPTCHA_FAILED,
@@ -171,6 +174,7 @@ function createCaptchaMiddleware() {
       });
     }
 
+    console.log(`[CAPTCHA] ✅ Verification succeeded`);
     return next();
   };
 }

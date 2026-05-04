@@ -129,6 +129,9 @@ async function seedBooks() {
   try {
     console.log('\n🌱 Starting book seeding...\n');
 
+    // Initialize database connection
+    await db.initializeDatabase();
+
     // Check if books already exist
     const countResult = await db.executeQuery('SELECT COUNT(*) as count FROM books');
     const existingCount = countResult.rows[0]?.count || 0;

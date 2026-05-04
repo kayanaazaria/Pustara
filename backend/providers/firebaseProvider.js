@@ -9,11 +9,6 @@
 const admin = require("../config/firebase");
 
 class FirebaseProvider {
-  constructor() {
-    console.log('[FIREBASE] FirebaseProvider constructor called');
-    console.log('[FIREBASE] process.env.FIREBASE_API_KEY at construct time:', process.env.FIREBASE_API_KEY ? 'SET' : 'UNDEFINED');
-  }
-
   /**
    * Verify ID token dari Firebase
    * @param {string} token - Firebase ID token
@@ -129,22 +124,13 @@ class FirebaseProvider {
   async signInWithEmailPassword(email, password) {
     try {
       const apiKey = process.env.FIREBASE_API_KEY;
-      
-      console.log('[FIREBASE] ===== signInWithEmailPassword called =====');
-      console.log('[FIREBASE] Email:', email);
-      console.log('[FIREBASE] API Key Status:', apiKey ? 'LOADED (length: ' + apiKey.length + ')' : 'UNDEFINED');
-      
       if (!apiKey) {
-        console.error('[FIREBASE] ❌ ERROR: FIREBASE_API_KEY is undefined!');
         return {
           success: false,
           error: "FIREBASE_API_KEY not configured",
         };
       }
 
-      console.log('[FIREBASE] ✅ API Key exists, attempting Firebase sign-in...');
-
-      console.log(`[FIREBASE] Attempting sign-in for ${email}`);
       const signInUrl = `https://www.googleapis.com/identitytoolkit/v3/relyingparty/verifyPassword?key=${apiKey}`;
 
       const response = await fetch(signInUrl, {
@@ -158,18 +144,25 @@ class FirebaseProvider {
       });
 
       const data = await response.json();
-      console.log(`[FIREBASE] Response status: ${response.status}`, { hasIdToken: !!data.idToken, hasError: !!data.error });
 
       if (!data.idToken) {
-        const errorMsg = data.error?.message || "Sign in failed";
-        console.error(`[FIREBASE] Sign-in failed for ${email}:`, errorMsg);
+        // Map Firebase error codes to user-friendly messages
+        let friendlyError = "Sign in failed";
+        if (data.error?.message) {
+          const errorMsg = data.error.message.toUpperCase();
+          if (errorMsg.includes('EMAIL_NOT_FOUND')) friendlyError = "Email tidak terdaftar";
+          else if (errorMsg.includes('INVALID_PASSWORD')) friendlyError = "Password salah";
+          else if (errorMsg.includes('USER_DISABLED')) friendlyError = "Akun dinonaktifkan";
+          else if (errorMsg.includes('TOO_MANY_ATTEMPTS')) friendlyError = "Terlalu banyak percobaan login. Coba lagi nanti";
+          else friendlyError = data.error.message;
+        }
+        console.log(`[FIREBASE] Error:`, { original: data.error?.message, friendly: friendlyError });
         return {
           success: false,
-          error: errorMsg,
+          error: friendlyError,
         };
       }
 
-      console.log(`[FIREBASE] ✅ Sign-in successful for ${email}`);
       return {
         success: true,
         data: {
@@ -180,7 +173,6 @@ class FirebaseProvider {
         },
       };
     } catch (error) {
-      console.error(`[FIREBASE] Exception during sign-in:`, error.message);
       return {
         success: false,
         error: error.message,
