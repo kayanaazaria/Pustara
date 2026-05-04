@@ -11,6 +11,13 @@
  * - routes/     : API routes
  */
 
+console.log('[STARTUP]', new Date().toISOString(), 'index.js loaded');
+const fs = require('fs');
+fs.writeFileSync('./debug-requests.log', `[${new Date().toISOString()}] === BACKEND STARTED ===\n`);
+
+// Log that we're about to define the "app" routes
+fs.appendFileSync('./debug-requests.log', `[${new Date().toISOString()}] Defining app routes...\n`);
+
 // CRITICAL: Polyfill global crypto for @typespec/ts-http-runtime
 if (typeof global.crypto === 'undefined') {
   global.crypto = require('crypto').webcrypto;
@@ -56,6 +63,8 @@ require('./jobs/cron'); //init cron jobs for ai-related tasks
 // INITIALIZE
 // ==========================================
 const app = express();
+const fsDebug = require('fs');
+fsDebug.appendFileSync('./debug-requests.log', `[${new Date().toISOString()}] app = express() created\n`);
 
 // CORS setup
 app.use((req, res, next) => {
@@ -85,6 +94,12 @@ app.use(cors({
   credentials: true,
 }));
 
+// DEBUG: Log all requests
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] 📍 ${req.method} ${req.path}`);
+  next();
+});
+
 // Setup Auth
 const authProvider = new FirebaseProvider();
 const authService = new AuthService(authProvider);
@@ -97,7 +112,23 @@ const optionalVerifyTokenMiddleware = createOptionalVerifyTokenMiddleware(authSe
 
 // Health Check
 app.get("/", (req, res) => {
+  require('fs').appendFileSync('./debug-requests.log', `[${new Date().toISOString()}] GET / hit\n`);
   res.json({ message: "Pustara API ready", status: "healthy" });
+});
+
+// TEST GET - verify app.get works
+app.get("/test-get", (req, res) => {
+  const fs = require('fs');
+  fs.appendFileSync('./debug-requests.log', `[${new Date().toISOString()}] GET /test-get hit\n`);
+  console.log('✅ GET /test-get reached!');
+  res.json({ success: true, msg: "GET works" });
+});
+require('fs').appendFileSync('./debug-requests.log', `[${new Date().toISOString()}] app.get("/test-get") REGISTERED\n`);
+
+// TEST - Different path
+app.post("/test-endpoint", (req, res) => {
+  console.log('🎯 POST /test-endpoint reached!');
+  res.json({ success: true, msg: "test-endpoint works" });
 });
 
 // Auth Routes
@@ -110,6 +141,10 @@ app.use("/survey", createSurveyRoutes(verifyTokenMiddleware));
 app.get("/api/protected", verifyTokenMiddleware, (req, res) => {
   res.json({ message: "Protected data", user: req.user });
 });
+
+// PROTECTED: Reviews endpoint (requires Firebase auth)
+const booksController = require('./controllers/booksController');
+app.post('/reviews', verifyTokenMiddleware, booksController.createOrUpdateReview);
 
 // Recommendations Routes
 app.use('/recommendations', createRecommendationsRoutes(verifyTokenMiddleware, optionalVerifyTokenMiddleware));

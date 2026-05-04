@@ -1146,15 +1146,15 @@ exports.uploadBookDev = async (req, res) => {
 exports.createOrUpdateReview = async (req, res) => {
   try {
     const { book_id, rating, review_text } = req.body;
-    const user_id = req.user?.uid; // From Firebase token
-    console.log('[DEBUG] Received review submission:', { book_id, user_id, rating, review_text });
+    const firebase_uid = req.user?.uid; // From Firebase token
+    console.log('[DEBUG] Received review submission:', { book_id, firebase_uid, rating, review_text });
 
     // Validation
     if (!book_id || !rating) {
       return res.status(400).json({ success: false, message: 'book_id and rating are required' });
     }
 
-    if (!user_id) {
+    if (!firebase_uid) {
       return res.status(401).json({ success: false, message: 'User authentication required' });
     }
 
@@ -1163,6 +1163,17 @@ exports.createOrUpdateReview = async (req, res) => {
     }
 
     const pool = require('../config/database').getPool();
+
+    // Lookup user's UUID from firebase_uid
+    const userLookupQuery = 'SELECT id FROM users WHERE firebase_uid = $1';
+    const userResult = await pool.query(userLookupQuery, [firebase_uid]);
+    
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'User not found - please complete profile setup' });
+    }
+    
+    const user_id = userResult.rows[0].id; // This is the UUID
+    console.log('[DEBUG] User UUID resolved:', user_id);
 
     // Check if review exists
     const checkQuery = 'SELECT id FROM reviews WHERE user_id = $1 AND book_id = $2';
