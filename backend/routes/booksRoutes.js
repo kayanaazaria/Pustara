@@ -3,8 +3,8 @@ const express = require('express');
 const router = express.Router();
 const booksController = require('../controllers/booksController');
 
-// DEVELOPMENT: Upload form page (no auth)
-router.get('/upload-book', booksController.getUploadForm);
+// DEVELOPMENT: Upload form page (no auth) - COMMENTED: getUploadForm tidak ada di controller
+// router.get('/upload-book', booksController.getUploadForm);
 
 // PUBLIC ROUTES - Read only
 router.get('/genres', booksController.getGenres);
@@ -15,10 +15,10 @@ router.get('/books/search', booksController.searchBooks);
 router.get('/books/:id/similar', booksController.getSimilarBooks);
 router.get('/books/:id', booksController.getBookDetail);
 router.get('/books/:id/file', booksController.downloadBookFile);
-router.get('/books/:bookId/reviews', booksController.getBookReviews);
+router.get('/books/:id/reviews', booksController.getBookReviews);
 
 // DEVELOPMENT: Upload endpoint (no auth required)
-router.post('/books/upload-dev', booksController.uploadBookDev);
+// router.post('/books/upload-dev', booksController.uploadBookDev); // TODO: implement uploadBookDev
 
 // Reviews endpoint (public, can add auth later)
 router.post('/reviews', booksController.createOrUpdateReview);

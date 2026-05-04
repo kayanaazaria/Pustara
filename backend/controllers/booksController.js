@@ -65,6 +65,98 @@ function isUuidLike(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''));
 }
 
+// GET /books/trending - Get trending books (populer berdasarkan jumlah review + rating)
+exports.getTrendingBooks = async (req, res) => {
+  const requestId = `[TRENDING-${Date.now()}]`;
+  
+  try {
+    // 🔍 DEBUG: Verify this function is called
+    console.log(`\n╔════════════════════════════════════════════════════════════╗`);
+    console.log(`║ [EXEC] booksController.getTrendingBooks RUNNING            ║`);
+    console.log(`║ Source: backend/controllers/booksController.js line 69     ║`);
+    console.log(`║ Type: DATABASE QUERY ONLY (no fetch call)                  ║`);
+    console.log(`╚════════════════════════════════════════════════════════════╝`);
+    console.log(`${requestId} Starting getTrendingBooks request`);
+    console.log(`${requestId} Query params:`, req.query);
+
+    const { limit = 10, offset = 0 } = req.query;
+    const limitNum = sanitizePagination(limit, 10, 1, 50);
+    const offsetNum = sanitizePagination(offset, 0, 0, 100000);
+
+    console.log(`${requestId} Sanitized params - limit: ${limitNum}, offset: ${offsetNum}`);
+
+    // Query trending books berdasarkan:
+    // 1. Jumlah review (review_count) - popularity
+    // 2. Rating rata-rata (avg_rating) - quality
+    // 3. Waktu dibuat (created_at) - recency
+    const query = `
+      SELECT * FROM books 
+      WHERE is_active = true
+      ORDER BY 
+        COALESCE(review_count, 0) DESC,
+        COALESCE(avg_rating, 0) DESC,
+        created_at DESC
+      LIMIT $1 OFFSET $2
+    `;
+
+    console.log(`${requestId} Executing database query...`);
+    const result = await db.executeQuery(query, [limitNum, offsetNum]);
+    const rows = toRows(result);
+    
+    console.log(`${requestId} Query successful, fetched ${rows.length} books`);
+
+    // Transform dengan download URLs
+    const booksData = rows.map((book) => {
+      try {
+        return withDownloadUrl(book, req);
+      } catch (mapErr) {
+        console.error(`${requestId} Error transforming book ${book?.id}:`, mapErr.message);
+        return book; // Return raw jika transform gagal
+      }
+    });
+
+    console.log(`${requestId} Successfully transformed ${booksData.length} books`);
+
+    res.json({
+      success: true,
+      data: booksData,
+      pagination: {
+        limit: limitNum,
+        offset: offsetNum,
+        count: booksData.length,
+      },
+      meta: {
+        timestamp: new Date().toISOString(),
+        source: 'database',
+        sortBy: 'review_count, avg_rating, created_at',
+      },
+    });
+
+  } catch (error) {
+    console.error(`${requestId} ❌ Error in getTrendingBooks:`, {
+      message: error.message,
+      code: error.code,
+      stack: error.stack?.split('\n')[0],
+    });
+
+    // Graceful fallback: return empty array dengan 500 status
+    res.status(500).json({
+      success: false,
+      error: {
+        type: 'DATABASE_ERROR',
+        message: 'Unable to fetch trending books',
+        detail: process.env.NODE_ENV === 'development' ? error.message : 'Service temporarily unavailable',
+      },
+      data: [],
+      pagination: {
+        limit: 10,
+        offset: 0,
+        count: 0,
+      },
+    });
+  }
+};
+
 // GET /books - List all books dengan pagination & filters
 exports.getBooks = async (req, res) => {
   try {
@@ -326,6 +418,78 @@ exports.getSimilarBooks = async (req, res) => {
   }
 };
 
+// GET /books/:id/reviews - Get book reviews
+exports.getBookReviews = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { limit = 100, offset = 0 } = req.query;
+    const limitNum = sanitizePagination(limit, 100, 1, 500);
+    const offsetNum = sanitizePagination(offset, 0, 0, 100000);
+
+    if (!isUuidLike(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid book id format',
+        error: { code: 'INVALID_BOOK_ID', id },
+      });
+    }
+
+    // Verify book exists
+    const bookCheck = await db.executeQuery(
+      'SELECT id FROM books WHERE id = $1 AND is_active = true',
+      [id]
+    );
+    const bookRows = toRows(bookCheck);
+    if (bookRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Book not found',
+        error: { code: 'BOOK_NOT_FOUND', id },
+      });
+    }
+
+    // Fetch reviews with user info
+    const query = `
+      SELECT 
+        r.id,
+        r.rating,
+        r.review_text as text,
+        r.created_at as time,
+        u.display_name as name,
+        COALESCE(u.display_name, 'U') as avatar
+      FROM reviews r
+      JOIN users u ON r.user_id = u.id
+      WHERE r.book_id = $1
+      ORDER BY r.created_at DESC
+      LIMIT $2 OFFSET $3
+    `;
+
+    const result = await db.executeQuery(query, [id, limitNum, offsetNum]);
+    const reviews = toRows(result);
+
+    // Get total count
+    const countResult = await db.executeQuery(
+      'SELECT COUNT(*) as total FROM reviews WHERE book_id = $1',
+      [id]
+    );
+    const countRows = toRows(countResult);
+    const totalReviews = Number.parseInt(String(countRows[0]?.total || 0), 10) || 0;
+
+    res.json({
+      success: true,
+      data: reviews,
+      pagination: {
+        limit: limitNum,
+        offset: offsetNum,
+        total: totalReviews,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching book reviews:', error.message);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 // GET /books/:id/file - Download book file
 exports.downloadBookFile = async (req, res) => {
   try {
@@ -522,6 +686,79 @@ exports.deleteBook = async (req, res) => {
     });
   } catch (error) {
     console.error('Error deleting book:', error.message);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// POST /reviews - Create or update a review
+exports.createOrUpdateReview = async (req, res) => {
+  try {
+    const { book_id, rating, review_text } = req.body;
+    const user_id = req.user?.uid; // From Firebase token
+
+    // Validation
+    if (!book_id) {
+      return res.status(400).json({ success: false, message: 'book_id is required' });
+    }
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({ success: false, message: 'rating must be 1-5' });
+    }
+    if (!review_text || typeof review_text !== 'string' || review_text.trim().length === 0) {
+      return res.status(400).json({ success: false, message: 'review_text is required' });
+    }
+    if (!user_id) {
+      return res.status(401).json({ success: false, message: 'User not authenticated' });
+    }
+
+    // Check if review exists
+    const checkQuery = 'SELECT id FROM reviews WHERE book_id = $1 AND user_id = $2';
+    const checkResult = await db.executeQuery(checkQuery, [book_id, user_id]);
+    const existingRows = toRows(checkResult);
+
+    let query, values, reviewId;
+
+    if (existingRows.length > 0) {
+      // UPDATE existing review
+      reviewId = existingRows[0].id;
+      query = `
+        UPDATE reviews 
+        SET rating = $1, review_text = $2, updated_at = NOW()
+        WHERE id = $3 AND user_id = $4
+        RETURNING id, rating, review_text, created_at, updated_at
+      `;
+      values = [rating, review_text, reviewId, user_id];
+    } else {
+      // INSERT new review
+      query = `
+        INSERT INTO reviews (user_id, book_id, rating, review_text)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id, rating, review_text, created_at, updated_at
+      `;
+      values = [user_id, book_id, rating, review_text];
+    }
+
+    const result = await db.executeQuery(query, values);
+    const rows = toRows(result);
+
+    if (rows.length === 0) {
+      return res.status(500).json({ success: false, message: 'Failed to save review' });
+    }
+
+    const review = rows[0];
+    res.json({
+      success: true,
+      data: {
+        id: review.id,
+        book_id,
+        user_id,
+        rating: review.rating,
+        review_text: review.review_text,
+        created_at: review.created_at,
+        updated_at: review.updated_at,
+      }
+    });
+  } catch (error) {
+    console.error('Error creating/updating review:', error.message);
     res.status(500).json({ success: false, message: error.message });
   }
 };
