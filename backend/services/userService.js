@@ -16,22 +16,32 @@ class UserService {
    */
   static async createUser(uid, email, displayName = null) {
     try {
-      console.log(`📝 Creating user: uid=${uid}, email=${email}`);
+      console.log(`📝 Creating user: uid=${uid}, email=${email}, displayName=${displayName}`);
+
+      if (!uid || !email) {
+        throw new Error(`Invalid user data: uid=${uid}, email=${email}`);
+      }
 
       let rows;
       if (isNeon) {
         // Neon: users punya kolom firebase_uid, username, display_name
         const username = email.split('@')[0].toLowerCase().replace(/[^a-z0-9_]/g, '_');
-        rows = await executeQuery(`
+        console.log(`  Inserting to Neon: firebase_uid=${uid}, username=${username}, email=${email}, display_name=${displayName || username}`);
+        
+        const result = await executeQuery(`
           INSERT INTO users (firebase_uid, username, display_name, email)
           VALUES ($1, $2, $3, $4)
           ON CONFLICT (firebase_uid) DO UPDATE SET updated_at = NOW()
           RETURNING *
         `, [uid, username, displayName || username, email]);
+        
+        // Extract rows dari result (executeQuery return { rows: [...] })
+        rows = Array.isArray(result) ? result : (result?.rows || []);
+        console.log(`  Insert result: ${rows.length} rows returned`);
       } else {
         // Azure SQL
         const username = email.split('@')[0].toLowerCase().replace(/[^a-z0-9_]/g, '_');
-        rows = await executeQuery(`
+        const result = await executeQuery(`
           IF NOT EXISTS (SELECT 1 FROM users WHERE firebase_uid = @p1)
           BEGIN
             INSERT INTO users (firebase_uid, username, email, display_name)
@@ -39,12 +49,19 @@ class UserService {
           END
           SELECT * FROM users WHERE firebase_uid = @p1;
         `, [uid, username, email, displayName || username]);
+        
+        rows = Array.isArray(result) ? result : (result?.recordset || []);
       }
 
-      console.log(`✅ User created: ${uid}`);
+      if (!rows || rows.length === 0) {
+        throw new Error(`No rows returned after insert/upsert for uid=${uid}`);
+      }
+
+      console.log(`✅ User created successfully: id=${rows[0].id}, uid=${uid}`);
       return { success: true, data: rows[0] };
     } catch (error) {
-      console.error(`❌ createUser error:`, error.message);
+      console.error(`❌ createUser error for uid=${uid}:`, error.message);
+      console.error(`  Stack: ${error.stack}`);
       return { success: false, error: error.message };
     }
   }
@@ -55,7 +72,10 @@ class UserService {
   static async getUserByUid(uid) {
     try {
       const col  = isNeon ? 'firebase_uid' : 'uid';
-      const rows = await executeQuery(`SELECT * FROM ${isNeon ? 'users' : 'Users'} WHERE ${col} = $1`, [uid]);
+      const result = await executeQuery(`SELECT * FROM ${isNeon ? 'users' : 'Users'} WHERE ${col} = $1`, [uid]);
+      
+      // Extract rows dari result
+      const rows = Array.isArray(result) ? result : (result?.rows || result?.recordset || []);
       return { success: true, data: rows[0] || null };
     } catch (error) {
       console.error('getUserByUid error:', error.message);

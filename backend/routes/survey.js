@@ -32,29 +32,47 @@ function createSurveyRoutes(verifyTokenMiddleware) {
     verifyTokenMiddleware,
     asyncHandler(async (req, res) => {
       const UserService = require("../services/userService");
+      const UserSurveyService = require("../services/userSurveyService");
       
       const uid = req.user.uid;
       const email = req.user.email;
       const surveyData = req.body;
 
-      // 1️⃣ Check if user exists in Azure SQL
-      const userExists = await UserService.getUserByUid(uid);
-
-      // 2️⃣ Auto-create user if needed (sync Firebase to SQL)
-      if (!userExists.data) {
-        console.log(`📝 New user detected (${email}), syncing to Azure SQL...`);
-        const createResult = await UserService.createUser(uid, email);
-        if (!createResult.success) {
-          return res.status(500).json({
-            success: false,
-            error: "Failed to create user record",
-          });
-        }
-        console.log(`✅ User synced successfully`);
+      if (!uid) {
+        return res.status(401).json({
+          success: false,
+          error: "Invalid Firebase UID",
+        });
       }
 
-      // 3️⃣ Save survey data
-      const result = await UserSurveyService.saveSurvey(uid, surveyData);
+      // 1️⃣ Check if user exists in database
+      const userExists = await UserService.getUserByUid(uid);
+
+      // 2️⃣ Auto-create user if needed (sync Firebase to database)
+      let userRecord = userExists.data;
+      if (!userRecord) {
+        console.log(`📝 New user detected (${email}), syncing to database...`);
+        const createResult = await UserService.createUser(uid, email);
+        if (!createResult.success) {
+          console.error(`❌ Failed to create user: ${createResult.error}`);
+          return res.status(500).json({
+            success: false,
+            error: `Failed to create user record: ${createResult.error}`,
+          });
+        }
+        userRecord = createResult.data;
+        console.log(`✅ User synced successfully: id=${userRecord.id}`);
+      }
+
+      if (!userRecord?.id) {
+        return res.status(500).json({
+          success: false,
+          error: "User ID not available",
+        });
+      }
+
+      // 3️⃣ Save survey data directly with userId, not re-querying
+      const result = await UserSurveyService.saveSurveyDirect(userRecord.id, surveyData);
       res.status(result.success ? 201 : 400).json(result);
     })
   );

@@ -53,16 +53,22 @@ function normalizeSurveyRecord(row) {
 
 async function upsertSurvey(userId, gender, age, favoriteGenre) {
   let query = '';
+  
+  // Convert favoriteGenre to JSON string if it's not null
+  const favoriteGenreJson = favoriteGenre ? JSON.stringify(favoriteGenre) : null;
 
   if (isNeon) {
+    // PostgreSQL needs quoted identifiers to preserve case (table is "UserSurvey", not "usersurvey")
+    // Note: columns in DB are snake_case: updated_at, not updatedAt
+    // favoriteGenre is JSONB, pass it as jsonb literal using $4::jsonb
     query = `
-      INSERT INTO UserSurvey (userId, gender, age, favoriteGenre)
-      VALUES ($1, $2, $3, $4)
-      ON CONFLICT (userId) DO UPDATE
-      SET gender = EXCLUDED.gender,
-          age = EXCLUDED.age,
-          favoriteGenre = EXCLUDED.favoriteGenre,
-          updatedAt = NOW()
+      INSERT INTO "UserSurvey" ("userId", "gender", "age", "favoriteGenre")
+      VALUES ($1, $2, $3, $4::jsonb)
+      ON CONFLICT ("userId") DO UPDATE
+      SET "gender" = EXCLUDED."gender",
+          "age" = EXCLUDED."age",
+          "favoriteGenre" = EXCLUDED."favoriteGenre",
+          "updated_at" = NOW()
       RETURNING *
     `;
   } else {
@@ -78,13 +84,15 @@ async function upsertSurvey(userId, gender, age, favoriteGenre) {
     `;
   }
 
-  const rows = await executeQuery(query, [userId, gender, age, favoriteGenre]);
+  const result = await executeQuery(query, [userId, gender, age, favoriteGenreJson]);
+  // Handle both return formats: { rows: [...] } for Neon and recordset for Azure
+  const rows = Array.isArray(result) ? result : (result?.rows || result?.recordset || []);
   return rows[0] || null;
 }
 
 class UserSurveyService {
   /**
-   * Save survey response untuk user
+   * Save survey response untuk user (dengan userId langsung, tidak perlu query)
    */
   static async saveSurvey(uid, surveyData) {
     try {
@@ -116,6 +124,43 @@ class UserSurveyService {
   }
 
   /**
+   * Save survey dengan userId langsung (untuk menghindari race condition)
+   */
+  static async saveSurveyDirect(userId, surveyData) {
+    try {
+      if (!userId) {
+        return { success: false, error: 'User ID is required' };
+      }
+
+      const { gender, age, favoriteGenre } = surveyData;
+      console.log(`💾 Saving survey for userId=${userId}: gender=${gender}, age=${age}, favoriteGenre=${favoriteGenre}`);
+      
+      const saved = await upsertSurvey(
+        userId,
+        toNull(gender),
+        toNull(age),
+        normalizeFavoriteGenre(favoriteGenre)
+      );
+
+      if (!saved) {
+        return { success: false, error: 'Failed to save survey to database' };
+      }
+
+      const normalized = normalizeSurveyRecord(saved);
+      console.log(`✅ Survey saved successfully for userId=${userId}`);
+
+      return {
+        success: true,
+        message: 'Survey saved successfully',
+        data: normalized,
+      };
+    } catch (error) {
+      console.error('Error saving survey (direct):', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
    * Get user survey by UID
    */
   static async getSurveyByUid(uid) {
@@ -125,7 +170,8 @@ class UserSurveyService {
         return { success: false, error: 'User not found' };
       }
 
-      const rows = await executeQuery('SELECT * FROM UserSurvey WHERE userId = $1', [userResult.data.id]);
+      const result = await executeQuery('SELECT * FROM "UserSurvey" WHERE "userId" = $1', [userResult.data.id]);
+      const rows = Array.isArray(result) ? result : (result?.rows || result?.recordset || []);
       return { success: true, data: normalizeSurveyRecord(rows[0] || null) };
     } catch (error) {
       console.error('Error getting survey:', error);
@@ -145,17 +191,31 @@ class UserSurveyService {
         return { success: false, error: 'No valid fields to update' };
       }
 
-      const setClause = fields.map((f, i) => `${f} = $${i + 2}`).join(', ');
-      const values = [userId, ...fields.map(f => updates[f])];
+      // Convert favoriteGenre to JSON string if it exists in updates
+      const updateValues = fields.map(f => {
+        if (f === 'favoriteGenre' && updates[f]) {
+          return JSON.stringify(updates[f]);
+        }
+        return updates[f];
+      });
+
+      const setClause = fields.map((f, i) => {
+        if (f === 'favoriteGenre' && isNeon) {
+          // For JSONB column, use ::jsonb cast with JSON-stringified value
+          return `"${f}" = $${i + 2}::jsonb`;
+        }
+        return `"${f}" = $${i + 2}`;
+      }).join(', ');
+      const values = [userId, ...updateValues];
       const timeFunc = isNeon ? 'NOW()' : 'GETDATE()';
       
       let query = '';
 
       if (isNeon) {
         query = `
-          UPDATE UserSurvey
-          SET ${setClause}, updatedAt = ${timeFunc}
-          WHERE userId = $1
+          UPDATE "UserSurvey"
+          SET ${setClause}, "updated_at" = ${timeFunc}
+          WHERE "userId" = $1
           RETURNING *
         `;
       } else {
@@ -167,7 +227,8 @@ class UserSurveyService {
         `;
       }
 
-      const rows = await executeQuery(query, values);
+      const result = await executeQuery(query, values);
+      const rows = Array.isArray(result) ? result : (result?.rows || result?.recordset || []);
       return { success: true, data: normalizeSurveyRecord(rows[0]) };
     } catch (error) {
       console.error('Error updating survey:', error);

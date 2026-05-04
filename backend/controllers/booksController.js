@@ -1278,7 +1278,7 @@ exports.createOrUpdateReview = async (req, res) => {
 // GET /books/:bookId/reviews - Get all reviews for a book
 exports.getBookReviews = async (req, res) => {
   try {
-    const { bookId } = req.params;
+    const { id: bookId } = req.params;  // Route param is :id, not :bookId
     const { limit = 50, offset = 0 } = req.query;
 
     const pool = require('../config/database').getPool();
