@@ -321,13 +321,17 @@ exports.downloadBookFile = async (req, res) => {
 // POST /books - Admin: Create new book (dengan file upload)
 exports.createBook = async (req, res) => {
   try {
-    const { title, description, year, pages, language } = req.body;
+    const { title, description, year, pages, language, isbn, external_key, total_stock, available } = req.body;
     let { authors, genres } = req.body;
     const file = req.files?.bookFile;
 
     // Validation
     if (!title) {
       return res.status(400).json({ success: false, message: 'Title is required' });
+    }
+
+    if (!isbn) {
+      return res.status(400).json({ success: false, message: 'ISBN is required' });
     }
 
     // Parse authors - accept string or array
@@ -344,6 +348,16 @@ exports.createBook = async (req, res) => {
     }
     if (!Array.isArray(genres) || genres.length === 0) {
       return res.status(400).json({ success: false, message: 'Genres is required (comma-separated or array)' });
+    }
+
+    // Validate stock values
+    const totalStockNum = parseInt(total_stock) || 5;
+    const availableNum = parseInt(available) || 5;
+    if (totalStockNum < 1) {
+      return res.status(400).json({ success: false, message: 'Total stock must be at least 1' });
+    }
+    if (availableNum < 0 || availableNum > totalStockNum) {
+      return res.status(400).json({ success: false, message: 'Available stock cannot exceed total stock' });
     }
 
     let fileUrl = null;
@@ -387,8 +401,8 @@ exports.createBook = async (req, res) => {
 
     const pool = require('../config/database').getPool();
     const query = `
-      INSERT INTO books (title, authors, genres, description, "year", pages, language, file_url, file_type, is_active)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true)
+      INSERT INTO books (title, authors, genres, description, "year", pages, language, isbn, external_key, total_stock, available, file_url, file_type, is_active)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, true)
       RETURNING *
     `;
 
@@ -400,6 +414,10 @@ exports.createBook = async (req, res) => {
       year ? parseInt(year) : null,
       pages ? parseInt(pages) : null,
       language || 'id',
+      isbn,
+      external_key || null,
+      totalStockNum,
+      availableNum,
       fileUrl,
       fileType
     ]);
@@ -419,7 +437,7 @@ exports.createBook = async (req, res) => {
 exports.updateBook = async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, authors, genres, description, year, pages, is_active } = req.body;
+    const { title, authors, genres, description, year, pages, is_active, isbn, external_key, total_stock, available } = req.body;
 
     const query = `
       UPDATE books 
@@ -430,13 +448,17 @@ exports.updateBook = async (req, res) => {
           "year" = COALESCE($5, "year"),
           pages = COALESCE($6, pages),
           is_active = COALESCE($7, is_active),
+          isbn = COALESCE($8, isbn),
+          external_key = COALESCE($9, external_key),
+          total_stock = COALESCE($10, total_stock),
+          available = COALESCE($11, available),
           updated_at = now()
-      WHERE id = $8
+      WHERE id = $12
       RETURNING *
     `;
 
     const result = await db.executeQuery(query, [
-      title, authors, genres, description, year, pages, is_active, id
+      title, authors, genres, description, year, pages, is_active, isbn, external_key, total_stock, available, id
     ]);
 
     if (result.rows.length === 0) {

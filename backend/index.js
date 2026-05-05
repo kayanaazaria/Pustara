@@ -94,6 +94,15 @@ app.use(cors({
   credentials: true,
 }));
 
+// ✅ Serve static files from uploads folder (for PDF downloads)
+app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
+  setHeaders: (res, filePath) => {
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline'); // Show in browser, not download
+  }
+}));
+console.log(`✅ Static uploads folder mounted at /uploads`);
+
 // DEBUG: Log all requests
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] 📍 ${req.method} ${req.path}`);

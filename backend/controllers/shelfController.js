@@ -42,12 +42,22 @@ function parseStringArray(value) {
 }
 
 function formatBook(row) {
+  // Generate cover URL from cover_id or isbn (don't query cover_url column, it doesn't exist)
+  let coverUrl = '';
+  if (row.cover_id) {
+    coverUrl = `https://covers.openlibrary.org/b/id/${row.cover_id}-M.jpg`;
+  } else if (row.isbn) {
+    coverUrl = `https://covers.openlibrary.org/b/isbn/${String(row.isbn).replace(/[-\s]/g, '')}-M.jpg`;
+  }
+
   return {
     id: String(row.id || ''),
     title: String(row.title || ''),
     authors: parseStringArray(row.authors),
     genres: parseStringArray(row.genres),
-    cover_url: row.cover_url ? String(row.cover_url) : '',
+    cover_url: coverUrl,
+    cover_id: row.cover_id || null,
+    isbn: row.isbn || null,
     avg_rating: Number(row.avg_rating || 0),
     year: Number(row.year || 0),
     pages: Number(row.pages || 0),
@@ -109,7 +119,7 @@ async function getWishlistRowsByUser(userId) {
   try {
     return toRows(
       await db.executeQuery(
-        `SELECT b.id, b.title, b.authors, b.genres, b.cover_url, b.avg_rating, b.year, b.pages,
+        `SELECT b.id, b.title, b.authors, b.genres, b.cover_id, b.isbn, b.avg_rating, b.year, b.pages,
                 w.book_id as wishlist_id, w.added_at
          FROM wishlist w
          JOIN books b ON b.id = w.book_id
@@ -122,7 +132,7 @@ async function getWishlistRowsByUser(userId) {
   } catch (_) {
     return toRows(
       await db.executeQuery(
-        `SELECT b.id, b.title, b.authors, b.genres, b.cover_url, b.avg_rating, b.year, b.pages,
+        `SELECT b.id, b.title, b.authors, b.genres, b.cover_id, b.isbn, b.avg_rating, b.year, b.pages,
                 w.book_id as wishlist_id, w.created_at AS added_at
          FROM wishlist w
          JOIN books b ON b.id = w.book_id
@@ -136,38 +146,47 @@ async function getWishlistRowsByUser(userId) {
 }
 
 async function ensureReadingSession(userId, bookId) {
-  const existingRows = toRows(
-    await db.executeQuery(
-      `SELECT id
-       FROM reading_sessions
-       WHERE user_id = $1 AND book_id = $2 AND status IN ('reading', 'active')
-       ORDER BY started_at DESC
-       LIMIT 1`,
-      [userId, bookId]
-    )
-  );
+  try {
+    const existingRows = toRows(
+      await db.executeQuery(
+        `SELECT id
+         FROM reading_sessions
+         WHERE user_id = $1 AND book_id = $2 AND status IN ('reading', 'active')
+         ORDER BY started_at DESC
+         LIMIT 1`,
+        [userId, bookId]
+      )
+    );
 
-  if (existingRows.length > 0) return existingRows[0];
+    if (existingRows.length > 0) return existingRows[0];
 
-  const bookRows = toRows(
-    await db.executeQuery(
-      'SELECT pages FROM books WHERE id = $1 AND is_active = true LIMIT 1',
-      [bookId]
-    )
-  );
-  const totalPages = Number(bookRows[0]?.pages || 0);
+    const bookRows = toRows(
+      await db.executeQuery(
+        'SELECT pages FROM books WHERE id = $1 AND is_active = true LIMIT 1',
+        [bookId]
+      )
+    );
+    const totalPages = Number(bookRows[0]?.pages || 0);
 
-  const createdRows = toRows(
-    await db.executeQuery(
-      `INSERT INTO reading_sessions
-       (user_id, book_id, current_page, total_pages, progress_percentage, status, started_at, last_read_at)
-       VALUES ($1, $2, 0, $3, 0, 'reading', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-       RETURNING id, started_at`,
-      [userId, bookId, totalPages]
-    )
-  );
+    const createdRows = toRows(
+      await db.executeQuery(
+        `INSERT INTO reading_sessions
+         (user_id, book_id, current_page, total_pages, progress_percentage, status, started_at, last_read_at)
+         VALUES ($1, $2, 0, $3, 0, 'reading', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+         RETURNING id, started_at`,
+        [userId, bookId, totalPages]
+      )
+    );
 
-  return createdRows[0] || null;
+    return createdRows[0] || null;
+  } catch (error) {
+    // reading_sessions table might not exist yet - that's ok, just skip
+    if (error.message?.includes('reading_sessions') || error.message?.includes('does not exist')) {
+      console.warn('ℹ️ reading_sessions table not yet created, skipping session tracking');
+      return null;
+    }
+    throw error;
+  }
 }
 
 /**
@@ -462,7 +481,7 @@ exports.getMyShelf = async (req, res) => {
       // Active loans (status: 'borrowed' or 'active')
       toRows(
         await db.executeQuery(
-          `SELECT b.id, b.title, b.authors, b.genres, b.cover_url, b.avg_rating, b.year, b.pages,
+          `SELECT b.id, b.title, b.authors, b.genres, b.cover_id, b.isbn, b.avg_rating, b.year, b.pages,
                   l.id as loan_id, l.borrowed_at, l.due_date, l.returned_at
            FROM loans l
            JOIN books b ON b.id = l.book_id
@@ -473,36 +492,56 @@ exports.getMyShelf = async (req, res) => {
           [actorUserId]
         )
       ),
-      // Currently reading sessions
-      toRows(
-        await db.executeQuery(
-          `SELECT b.id, b.title, b.authors, b.genres, b.cover_url, b.avg_rating, b.year, b.pages,
-                  rs.id as session_id, rs.current_page, rs.total_pages, 
-                  rs.progress_percentage, rs.last_read_at, rs.started_at
-           FROM reading_sessions rs
-           JOIN books b ON b.id = rs.book_id
-           WHERE rs.user_id = $1
-             AND b.is_active = true
-             AND rs.status IN ('reading', 'active')
-           ORDER BY rs.last_read_at DESC`,
-          [actorUserId]
-        )
-      ),
-      // Finished reading sessions
-      toRows(
-        await db.executeQuery(
-          `SELECT b.id, b.title, b.authors, b.genres, b.cover_url, b.avg_rating, b.year, b.pages,
-                  rs.id as session_id, rs.current_page, rs.total_pages, 
-                  rs.progress_percentage, rs.finished_at, rs.started_at, rs.reading_time_minutes
-           FROM reading_sessions rs
-           JOIN books b ON b.id = rs.book_id
-           WHERE rs.user_id = $1
-             AND b.is_active = true
-             AND rs.status = 'finished'
-           ORDER BY rs.finished_at DESC`,
-          [actorUserId]
-        )
-      ),
+      // Currently reading sessions - with fallback if table doesn't exist
+      (async () => {
+        try {
+          return toRows(
+            await db.executeQuery(
+              `SELECT b.id, b.title, b.authors, b.genres, b.cover_id, b.isbn, b.avg_rating, b.year, b.pages,
+                      rs.id as session_id, rs.current_page, rs.total_pages, 
+                      rs.progress_percentage, rs.last_read_at, rs.started_at
+               FROM reading_sessions rs
+               JOIN books b ON b.id = rs.book_id
+               WHERE rs.user_id = $1
+                 AND b.is_active = true
+                 AND rs.status IN ('reading', 'active')
+               ORDER BY rs.last_read_at DESC`,
+              [actorUserId]
+            )
+          );
+        } catch (err) {
+          if (String(err.message).includes('reading_sessions')) {
+            console.warn('⚠️  reading_sessions table tidak ada - menggunakan fallback kosong');
+            return [];
+          }
+          throw err;
+        }
+      })(),
+      // Finished reading sessions - with fallback if table doesn't exist
+      (async () => {
+        try {
+          return toRows(
+            await db.executeQuery(
+              `SELECT b.id, b.title, b.authors, b.genres, b.cover_id, b.isbn, b.avg_rating, b.year, b.pages,
+                      rs.id as session_id, rs.current_page, rs.total_pages, 
+                      rs.progress_percentage, rs.finished_at, rs.started_at, rs.reading_time_minutes
+               FROM reading_sessions rs
+               JOIN books b ON b.id = rs.book_id
+               WHERE rs.user_id = $1
+                 AND b.is_active = true
+                 AND rs.status = 'finished'
+               ORDER BY rs.finished_at DESC`,
+              [actorUserId]
+            )
+          );
+        } catch (err) {
+          if (String(err.message).includes('reading_sessions')) {
+            console.warn('⚠️  reading_sessions table tidak ada - menggunakan fallback kosong');
+            return [];
+          }
+          throw err;
+        }
+      })(),
       // Wishlist / liked books
       getWishlistRowsByUser(actorUserId),
     ]);
