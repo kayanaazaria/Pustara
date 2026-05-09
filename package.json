@@ -6,6 +6,7 @@
     "secret:scan-staged": "node scripts/check-staged-secrets.js"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.105.4",
     "cors": "^2.8.6",
     "express": "^4.18.2",
     "mssql": "^12.2.0"
