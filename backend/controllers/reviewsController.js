@@ -38,7 +38,7 @@ exports.getRecentReviews = async (req, res) => {
       LEFT JOIN users u ON r.user_id = u.id
       LEFT JOIN books b ON r.book_id = b.id
       WHERE (b.is_active IS NULL OR b.is_active = true)
-      ORDER BY COALESCE(r.created_at, r.created_at_utc, r.created) DESC
+      ORDER BY r.created_at DESC
       LIMIT $1`;
 
     let rows = [];
