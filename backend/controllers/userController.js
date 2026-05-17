@@ -345,8 +345,8 @@ async function resolveUsernameOrIdToUserId(usernameOrId) {
   })();
   const candidate = decoded.startsWith('@') ? decoded.slice(1) : decoded;
 
-  // If it's a numeric ID, try that first
-  if (/^\d+$/.test(candidate)) {
+  // If it already looks like a direct user ID, use it as-is.
+  if (/^\d+$/.test(candidate) || /^[0-9a-fA-F-]{16,}$/.test(candidate)) {
     return candidate;
   }
 
