@@ -246,7 +246,10 @@ exports.getBookReviews = async (req, res) => {
     const limitNum = sanitizePagination(limit, 100, 1, 500);
     const offsetNum = sanitizePagination(offset, 0, 0, 100000);
 
+    console.log('[BookReviews] Request received:', { id, limitQuery: limit, offsetQuery: offset, limitNum, offsetNum });
+
     if (!isUuidLike(id)) {
+      console.log('[BookReviews] INVALID UUID:', id);
       return res.status(400).json({
         success: false,
         message: 'Invalid book id format',
@@ -263,35 +266,47 @@ exports.getBookReviews = async (req, res) => {
     const bookRows = toRows(bookCheck);
 
     if (bookRows.length === 0) {
+      console.log('[BookReviews] BOOK NOT FOUND:', id);
       return res.status(404).json({
         success: false,
         message: 'Book not found',
         error: { code: 'BOOK_NOT_FOUND', id },
       });
     }
+    console.log('[BookReviews] Book found:', id);
 
     // Fetch reviews with user info
+    // Table uses 'body' column for review text; alias as both 'body' and 'review_text' for compatibility
     const query = `
       SELECT 
         r.id,
+        r.user_id,
+        r.book_id,
         r.rating,
         r.body as text,
+        r.body as body,
+        r.body as review_text,
         r.created_at as time,
         COALESCE(u.display_name, u.username) as name,
         u.avatar_url,
         COALESCE(u.display_name, u.username, 'U') as avatar,
-        COUNT(rl.review_id) as likes
+        COALESCE(r.likes, 0) as likes
       FROM reviews r
-      JOIN users u ON r.user_id = u.id
-      LEFT JOIN review_likes rl ON rl.review_id = r.id
+      LEFT JOIN users u ON r.user_id = u.id
       WHERE r.book_id = $1
-      GROUP BY r.id, u.display_name, u.username, u.avatar_url
       ORDER BY r.created_at DESC
       LIMIT $2 OFFSET $3
     `;
 
+    console.log('[BookReviews] Query:', { bookId: id, limit: limitNum, offset: offsetNum });
     const result = await db.executeQuery(query, [id, limitNum, offsetNum]);
     const reviews = toRows(result);
+    console.log('[BookReviews] Fetched reviews:', reviews.length, 'for book', id);
+    if (reviews.length > 0) {
+      console.log('[BookReviews] First review sample:', { id: reviews[0]?.id, rating: reviews[0]?.rating, textLen: String(reviews[0]?.text || '').length });
+    } else {
+      console.log('[BookReviews] NO REVIEWS FOUND for book:', id);
+    }
 
     // Get total count
     const countResult = await db.executeQuery(
@@ -304,7 +319,7 @@ exports.getBookReviews = async (req, res) => {
     const totalReviews =
       Number.parseInt(String(countRows[0]?.total || 0), 10) || 0;
 
-    res.json({
+    const responsePayload = {
       success: true,
       data: reviews,
       pagination: {
@@ -312,9 +327,18 @@ exports.getBookReviews = async (req, res) => {
         offset: offsetNum,
         total: totalReviews,
       },
+    };
+    
+    console.log('[BookReviews] SENDING RESPONSE:', { 
+      success: true, 
+      dataCount: reviews.length, 
+      dataIsArray: Array.isArray(reviews),
+      total: totalReviews 
     });
+    
+    res.json(responsePayload);
   } catch (error) {
-    console.error('Error fetching book reviews:', error.message);
+    console.error('[BookReviews] EXCEPTION ERROR:', error.message, error.stack);
 
     res.status(500).json({
       success: false,
@@ -328,6 +352,7 @@ exports.createOrUpdateReview = async (req, res) => {
   try {
     const { book_id, rating, body } = req.body;
     const firebase_uid = req.user?.uid;
+    const { isNeon } = require('../config/database');
     
     if (!firebase_uid) {
     return res.status(401).json({
@@ -396,24 +421,30 @@ exports.createOrUpdateReview = async (req, res) => {
     let values;
     let reviewId;
 
+    // Use appropriate column name based on database type
+    const reviewColumn = isNeon ? 'review_text' : 'body';
+    const returnColumns = isNeon 
+      ? 'id, rating, review_text as body, created_at, updated_at'
+      : 'id, rating, body, created_at, updated_at';
+
     if (existingRows.length > 0) {
       // UPDATE existing review
       reviewId = existingRows[0].id;
 
       query = `
         UPDATE reviews
-        SET rating = $1, body = $2, updated_at = NOW()
+        SET rating = $1, ${reviewColumn} = $2, updated_at = NOW()
         WHERE id = $3 AND user_id = $4
-        RETURNING id, rating, body, created_at, updated_at
+        RETURNING ${returnColumns}
       `;
 
       values = [rating, body, reviewId, user_id];
     } else {
       // INSERT new review
       query = `
-        INSERT INTO reviews (user_id, book_id, rating, body)
+        INSERT INTO reviews (user_id, book_id, rating, ${reviewColumn})
         VALUES ($1, $2, $3, $4)
-        RETURNING id, rating, body, created_at, updated_at
+        RETURNING ${returnColumns}
       `;
 
       values = [user_id, book_id, rating, body];
