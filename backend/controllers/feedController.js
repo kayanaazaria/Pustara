@@ -146,7 +146,8 @@ const reviewQuery = `SELECT
     JOIN books b ON b.id = r.book_id
     JOIN users u ON u.id = r.user_id
     WHERE r.user_id ${actorScope}
-      AND b.is_active = true`;
+      AND b.is_active = true
+      AND COALESCE(u.public_reviews, true) = true`;
 
   const unionQuery = (wishlistQuery) => `
     SELECT *

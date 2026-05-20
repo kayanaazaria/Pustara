@@ -32,6 +32,10 @@ CREATE TABLE [dbo].[users] (
     [reading_streak] INT DEFAULT 0,
     [total_read] INT DEFAULT 0,
     [status] NVARCHAR(50) DEFAULT 'active',
+    [activity_visible] BIT DEFAULT 1,
+    [public_reading_list] BIT DEFAULT 1,
+    [public_reviews] BIT DEFAULT 1,
+    [public_followers] BIT DEFAULT 1,
     [created_at] DATETIME2 DEFAULT GETDATE(),
     [updated_at] DATETIME2 DEFAULT GETDATE()
 );

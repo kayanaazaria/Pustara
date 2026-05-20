@@ -275,7 +275,24 @@ exports.getBookReviews = async (req, res) => {
     }
     console.log('[BookReviews] Book found:', id);
 
+    // Get authenticated user's ID (optional - for privacy check)
+    let viewingUserId = null;
+    if (req.user?.uid) {
+      try {
+        const userRows = toRows(
+          await db.executeQuery(
+            'SELECT id FROM users WHERE firebase_uid = $1 LIMIT 1',
+            [req.user.uid]
+          )
+        );
+        viewingUserId = userRows[0]?.id || null;
+      } catch (_) {
+        // If lookup fails, just continue without viewing_user_id
+      }
+    }
+
     // Fetch reviews with user info
+    // Privacy: Only show reviews where public_reviews=true OR the viewing user is the owner
     // Table uses 'body' column for review text; alias as both 'body' and 'review_text' for compatibility
     const query = `
       SELECT 
@@ -294,12 +311,16 @@ exports.getBookReviews = async (req, res) => {
       FROM reviews r
       LEFT JOIN users u ON r.user_id = u.id
       WHERE r.book_id = $1
+        AND (
+          COALESCE(u.public_reviews, true) = true
+          OR r.user_id = $4
+        )
       ORDER BY r.created_at DESC
       LIMIT $2 OFFSET $3
     `;
 
-    console.log('[BookReviews] Query:', { bookId: id, limit: limitNum, offset: offsetNum });
-    const result = await db.executeQuery(query, [id, limitNum, offsetNum]);
+    console.log('[BookReviews] Query:', { bookId: id, limit: limitNum, offset: offsetNum, viewingUserId });
+    const result = await db.executeQuery(query, [id, limitNum, offsetNum, viewingUserId]);
     const reviews = toRows(result);
     console.log('[BookReviews] Fetched reviews:', reviews.length, 'for book', id);
     if (reviews.length > 0) {
@@ -308,10 +329,13 @@ exports.getBookReviews = async (req, res) => {
       console.log('[BookReviews] NO REVIEWS FOUND for book:', id);
     }
 
-    // Get total count
+    // Get total count (respecting privacy)
     const countResult = await db.executeQuery(
-      'SELECT COUNT(*) as total FROM reviews WHERE book_id = $1',
-      [id]
+      `SELECT COUNT(*) as total FROM reviews r
+       LEFT JOIN users u ON r.user_id = u.id
+       WHERE r.book_id = $1
+         AND (COALESCE(u.public_reviews, true) = true OR r.user_id = $2)`,
+      [id, viewingUserId]
     );
 
     const countRows = toRows(countResult);

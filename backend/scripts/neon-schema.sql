@@ -16,6 +16,10 @@ CREATE TABLE IF NOT EXISTS users (
     reading_streak INT DEFAULT 0,
     total_read INT DEFAULT 0,
     status VARCHAR(50) DEFAULT 'active',
+    activity_visible BOOLEAN DEFAULT true,
+    public_reading_list BOOLEAN DEFAULT true,
+    public_reviews BOOLEAN DEFAULT true,
+    public_followers BOOLEAN DEFAULT true,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

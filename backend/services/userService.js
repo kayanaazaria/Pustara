@@ -79,8 +79,8 @@ class UserService {
   static async updateUser(uid, updates) {
     try {
       const allowed = isNeon
-        ? ['display_name', 'username', 'avatar_url', 'bio', 'preferred_genres']
-        : ['display_name', 'username', 'avatar_url', 'bio', 'preferred_genres'];
+        ? ['display_name', 'username', 'avatar_url', 'bio', 'preferred_genres', 'activity_visible', 'public_reading_list', 'public_reviews']
+        : ['display_name', 'username', 'avatar_url', 'bio', 'preferred_genres', 'activity_visible', 'public_reading_list', 'public_reviews'];
 
       const fields = Object.keys(updates).filter(k => allowed.includes(k));
       if (!fields.length) return { success: false, error: 'No valid fields to update' };

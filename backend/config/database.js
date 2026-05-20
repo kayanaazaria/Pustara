@@ -105,6 +105,10 @@ async function ensureNeonShelfSchemaCompatibility() {
     "ALTER TABLE IF EXISTS notifications ADD COLUMN IF NOT EXISTS read BOOLEAN DEFAULT false",
     "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'active'",
     "CREATE INDEX IF NOT EXISTS idx_users_status ON users(status)",
+    "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS activity_visible BOOLEAN DEFAULT true",
+    "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS public_reading_list BOOLEAN DEFAULT true",
+    "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS public_reviews BOOLEAN DEFAULT true",
+    "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS public_followers BOOLEAN DEFAULT true",
   ];
 
   for (const statement of safeStatements) {
