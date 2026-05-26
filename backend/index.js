@@ -38,7 +38,15 @@ const { createCheckActiveSessionMiddleware } = require("./middleware/checkActive
 const { authorizeAdmin } = require("./middleware/adminAuth");
 const { createAuthRoutes } = require("./routes/auth");
 const createSurveyRoutes = require("./routes/survey");
-const { initializeDatabase, ensureNeonShelfSchemaCompatibility, ensureNeonUsersSchemaCompatibility, createLoginEventsTable, createUsersTable, createUserSurveyTable } = require("./config/database");
+const {
+  initializeDatabase,
+  ensureNeonShelfSchemaCompatibility,
+  ensureNeonUsersSchemaCompatibility,
+  createLoginEventsTable,
+  createUsersTable,
+  createUserSurveyTable,
+  getPool
+} = require("./config/database");
 
 // Routes
 const createRecommendationsRoutes = require('./routes/recommendations');
@@ -73,24 +81,42 @@ app.use(fileUpload({
   useTempFiles: true,
   tempFileDir: '/tmp/',
 }));
+
+// ==========================================
+// CORS SETUP - CRITICAL FOR VERCEL FRONTEND
+// ==========================================
 // Use a dynamic origin checker so the cors middleware will reflect the
 // actual requesting Origin when credentials are allowed. Also include
 // custom device headers used by the frontend (x-device-id, etc.) so
 // preflight responses include them in Access-Control-Allow-Headers.
-app.use(cors({
-  origin: (origin, callback) => {
-    // Allow requests with no origin (mobile/native or curl)
-    if (!origin) return callback(null, true);
-    try {
-      const allowed = Array.isArray(CONFIG.CORS_ORIGINS)
-        ? CONFIG.CORS_ORIGINS
-        : [CONFIG.CORS_ORIGINS];
-      if (allowed.indexOf(origin) !== -1) return callback(null, true);
-    } catch (e) {
-      // fallback: deny
+const corsOriginCallback = (origin, callback) => {
+  // Allow requests with no origin (mobile/native, curl, server-to-server)
+  if (!origin) {
+    console.log("✅ CORS: No origin header (likely mobile/native/internal)");
+    return callback(null, true);
+  }
+  
+  try {
+    const allowed = Array.isArray(CONFIG.CORS_ORIGINS)
+      ? CONFIG.CORS_ORIGINS
+      : [CONFIG.CORS_ORIGINS];
+    
+    if (allowed.indexOf(origin) !== -1) {
+      console.log(`✅ CORS: Origin allowed: ${origin}`);
+      return callback(null, true);
     }
-    return callback(new Error('Not allowed by CORS'));
-  },
+    
+    console.warn(`❌ CORS: Origin NOT allowed: ${origin}`);
+    console.warn(`📋 Allowed origins: ${allowed.join(", ")}`);
+  } catch (e) {
+    console.error("❌ CORS: Origin check error:", e.message);
+  }
+  
+  return callback(new Error('Not allowed by CORS'));
+};
+
+app.use(cors({
+  origin: corsOriginCallback,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: [
     "Content-Type",
@@ -100,6 +126,12 @@ app.use(cors({
     "x-device-name",
     "x-device-os",
     "x-device-browser",
+  ],
+  exposedHeaders: [
+    "Content-Type",
+    "X-Total-Count",  // For pagination
+    "X-Page-Number",
+    "X-Page-Size",
   ],
   credentials: true,
   optionsSuccessStatus: 200,
