@@ -1006,7 +1006,13 @@ exports.downloadBookFile = async (req, res) => {
     }
 
     // 6. Stream PDF response to browser using Readable.fromWeb.
-    res.setHeader('Content-Type', book.file_type || 'application/pdf');
+    // Normalize Content-Type: some DB entries store 'pdf' instead of full mime type
+    let contentType = String(book.file_type || '').trim();
+    if (!contentType || !contentType.includes('/')) {
+      if (contentType.toLowerCase() === 'pdf' || contentType.toLowerCase() === 'application/x-pdf') contentType = 'application/pdf';
+      else contentType = 'application/octet-stream';
+    }
+    res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(book.title)}.pdf"`);
 
     if (!response.body) {
@@ -1064,7 +1070,13 @@ exports.downloadBookFileAdmin = async (req, res) => {
       return res.status(response.status).json({ success: false, message: 'Gagal ambil file dari storage.' });
     }
 
-    res.setHeader('Content-Type', book.file_type || 'application/pdf');
+    // Normalize content type similar to above
+    let contentTypeAdmin = String(book.file_type || '').trim();
+    if (!contentTypeAdmin || !contentTypeAdmin.includes('/')) {
+      if (contentTypeAdmin.toLowerCase() === 'pdf' || contentTypeAdmin.toLowerCase() === 'application/x-pdf') contentTypeAdmin = 'application/pdf';
+      else contentTypeAdmin = 'application/octet-stream';
+    }
+    res.setHeader('Content-Type', contentTypeAdmin);
     res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(book.title)}.pdf"`);
 
     if (!response.body) {

@@ -12,6 +12,7 @@
 const express = require('express');
 const router = express.Router();
 const UserService = require('../services/userService');
+const UserController = require('../controllers/userController');
 const { getAdminDashboardAnalytics } = require('../services/analyticsService');
 const FirebaseProvider = require('../providers/firebaseProvider');
 const DASHBOARD_OVERVIEW_TTL_MS = 30 * 1000;
@@ -38,15 +39,103 @@ router.get('/users', asyncHandler(async (req, res) => {
     return res.status(500).json({ success: false, error: result.error });
   }
 
-  res.json({
-    success: true,
-    data: result.data,
-    pagination: {
-      limit,
-      offset,
-      total: result.total,
-    },
-  });
+  // Enrich returned users with computed profile info (privacy-aware total_read)
+  try {
+    const users = Array.isArray(result.data) ? result.data : [];
+    // resolve actor id (numeric) for privacy-aware profile building
+    let actorId = null;
+    try {
+      const actorUid = req.user?.uid;
+      if (actorUid) {
+        const actorResult = await UserService.getUserByUid(actorUid);
+        if (actorResult.success && actorResult.data && actorResult.data.id) actorId = String(actorResult.data.id);
+      }
+    } catch (_) { /* ignore */ }
+    // compute finished/read counts per-user (ignore user's privacy since admin is requesting)
+    const db = require('../config/database');
+    const computeFinishedFor = async (userId) => {
+      const q = `SELECT COUNT(*) AS total FROM (
+             -- returned loans
+             SELECT
+               b.id,
+               CASE
+                 WHEN rs.id IS NULL THEN 'unfinished'
+                 WHEN COALESCE(rs.progress_percentage, 0) >= 100
+                   OR COALESCE(rs.current_page, 0) >= COALESCE(rs.total_pages, 0) THEN 'finished'
+                 ELSE 'unfinished'
+               END AS history_status
+             FROM loans l
+             JOIN books b ON b.id = l.book_id
+             LEFT JOIN LATERAL (
+               SELECT id, current_page, total_pages, progress_percentage, finished_at, started_at, reading_time_minutes
+               FROM reading_sessions
+               WHERE book_id = l.book_id AND user_id = $1
+               ORDER BY COALESCE(finished_at, last_read_at, started_at) DESC
+               LIMIT 1
+             ) rs ON true
+             WHERE l.user_id = $1
+               AND b.is_active = true
+               AND l.returned_at IS NOT NULL
+
+             UNION ALL
+
+             -- finished reading sessions that are not tied to a returned loan
+             SELECT
+               b.id,
+               CASE
+                 WHEN COALESCE(rs.progress_percentage, 0) < 100
+                  OR COALESCE(rs.current_page, 0) < COALESCE(rs.total_pages, 0) THEN 'unfinished'
+                 ELSE 'finished'
+               END AS history_status
+             FROM reading_sessions rs
+             JOIN books b ON b.id = rs.book_id
+             WHERE rs.user_id = $1
+               AND b.is_active = true
+               AND rs.status = 'finished'
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM loans l
+                 WHERE l.book_id = rs.book_id
+                   AND l.user_id = rs.user_id
+                   AND l.returned_at IS NOT NULL
+               )
+           ) sub WHERE history_status = 'finished'`;
+      try {
+        const rows = await db.executeQuery(q, [userId]);
+        return Number(rows[0]?.total || 0);
+      } catch (e) {
+        return 0;
+      }
+    };
+
+    const enriched = await Promise.all(users.map(async (u) => {
+      const uid = u.id || u.uid || u.firebase_uid;
+      const userId = String(u.id || uid || '');
+      const count = userId ? await computeFinishedFor(userId) : 0;
+      return { ...u, total_read: Number(count || u.total_read || 0) };
+    }));
+
+    return res.json({
+      success: true,
+      data: enriched,
+      pagination: {
+        limit,
+        offset,
+        total: result.total,
+      },
+    });
+  } catch (err) {
+    console.warn('Failed to enrich admin users list:', err?.message || err);
+    return res.json({
+      success: true,
+      data: result.data,
+      pagination: {
+        limit,
+        offset,
+        total: result.total,
+      },
+    });
+  }
 }));
 
 /**
@@ -54,16 +143,35 @@ router.get('/users', asyncHandler(async (req, res) => {
  */
 router.get('/users/:uid', asyncHandler(async (req, res) => {
   const { uid } = req.params;
-  
-  const result = await UserService.getUserByUid(uid);
-  if (!result.success || !result.data) {
-    return res.status(404).json({ success: false, error: 'User not found' });
-  }
+  // Attempt to return a full profile (including finished/read counts)
+  try {
+    // resolve to numeric ID if possible and pass actorId so owner/privacy checks work
+    const actorUid = req.user?.uid;
+    let actorId = null;
+    try {
+      if (actorUid) {
+        const actorResult = await UserService.getUserByUid(actorUid);
+        if (actorResult.success && actorResult.data && actorResult.data.id) actorId = String(actorResult.data.id);
+      }
+    } catch (_) {}
 
-  res.json({
-    success: true,
-    data: result.data,
-  });
+    // If uid is a numeric internal id use it, otherwise try to resolve
+    const targetUserId = String(uid);
+    const profile = await UserController.buildUserProfile(targetUserId, actorId, actorUid);
+    if (!profile) {
+      // fallback to DB row
+      const result = await UserService.getUserByUid(uid);
+      if (!result.success || !result.data) return res.status(404).json({ success: false, error: 'User not found' });
+      return res.json({ success: true, data: result.data });
+    }
+
+    return res.json({ success: true, data: profile });
+  } catch (err) {
+    console.warn('Admin user detail fallback error:', err?.message || err);
+    const result = await UserService.getUserByUid(uid);
+    if (!result.success || !result.data) return res.status(404).json({ success: false, error: 'User not found' });
+    return res.json({ success: true, data: result.data });
+  }
 }));
 
 /**

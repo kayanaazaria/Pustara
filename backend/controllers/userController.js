@@ -863,6 +863,9 @@ exports.getMyProfile = async (req, res) => {
   }
 };
 
+// Export buildUserProfile for internal reuse (e.g., admin routes)
+exports.buildUserProfile = buildUserProfile;
+
 exports.checkUsernameAvailability = async (req, res) => {
   try {
     const rawUsername = typeof req.query?.username === 'string' ? req.query.username : '';

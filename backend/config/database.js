@@ -262,9 +262,13 @@ async function executeQuery(query, params = []) {
 
   // Azure SQL logic
   if (!azurePool) throw new Error('Azure DB not initialized. Call initializeDatabase() first');
-  
-  let azureQuery = query;
   const request = azurePool.request();
+  const result = await runAzureQuery(request, query, params);
+  return result.rows;
+}
+
+function normalizeAzureQuery(query, params, request) {
+  let azureQuery = query;
 
   // Convert placeholders: $1, $2 → @p1, @p2
   params.forEach((val, i) => {
@@ -274,41 +278,94 @@ async function executeQuery(query, params = []) {
   });
 
   // Convert PostgreSQL syntax to T-SQL syntax
-  
-  // 1. Convert true/false literals to 1/0
   azureQuery = azureQuery.replace(/\btrue\b/gi, '1');
   azureQuery = azureQuery.replace(/\bfalse\b/gi, '0');
-  
-  // 2. Convert @pN = ANY(column) to CHARINDEX for JSON arrays
-  // Handles: @p1 = ANY(genres), @p2 = ANY(authors) etc
+
   azureQuery = azureQuery.replace(
     /@p(\d+)\s*=\s*ANY\s*\((\w+)\)/gi,
-    (match, paramNum, columnName) => {
-      return `CHARINDEX('\"' + @p${paramNum} + '\"', ${columnName}) > 0`;
-    }
+    (match, paramNum, columnName) => `CHARINDEX('"' + @p${paramNum} + '"', ${columnName}) > 0`
   );
-  
-  // 3. Convert LIMIT x OFFSET y to OFFSET y ROWS FETCH NEXT x ROWS ONLY
-  // Pattern: LIMIT @pN [OFFSET @pM]
+
   azureQuery = azureQuery.replace(
     /LIMIT\s+@p(\d+)(?:\s+OFFSET\s+@p(\d+))?/gi,
     (match, limitParam, offsetParam) => {
       if (offsetParam) {
         return `OFFSET @p${offsetParam} ROWS FETCH NEXT @p${limitParam} ROWS ONLY`;
-      } else {
-        return `OFFSET 0 ROWS FETCH NEXT @p${limitParam} ROWS ONLY`;
       }
+      return `OFFSET 0 ROWS FETCH NEXT @p${limitParam} ROWS ONLY`;
     }
   );
-  
-  // 4. Convert ILIKE to LIKE for case-insensitive search
+
   azureQuery = azureQuery.replace(/\bILIKE\b/gi, 'LIKE');
-  
+  return azureQuery;
+}
+
+async function runAzureQuery(request, query, params = []) {
+  const azureQuery = normalizeAzureQuery(query, params, request);
   const result = await request.query(azureQuery);
-  
-  // Return in same format as pg library for compatibility
-  // Controllers expect result.rows, but mssql uses result.recordset
   return { rows: result.recordset };
+}
+
+async function withTransaction(work, options = {}) {
+  if (isNeon) {
+    if (!pgPool) throw new Error('Neon DB not initialized. Call initializeDatabase() first');
+    const client = await pgPool.connect();
+
+    try {
+      await client.query('BEGIN');
+      await client.query(`SET TRANSACTION ISOLATION LEVEL ${options.isolationLevel || 'SERIALIZABLE'}`);
+
+      const tx = {
+        isNeon: true,
+        executeQuery: async (query, params = []) => {
+          const result = await client.query(query, params);
+          return result.rows;
+        },
+        raw: client,
+      };
+
+      const result = await work(tx);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (_) {
+        // Ignore rollback failures so the original error can surface.
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  if (!azurePool) throw new Error('Azure DB not initialized. Call initializeDatabase() first');
+  const transaction = new sql.Transaction(azurePool);
+
+  try {
+    await transaction.begin(options.isolationLevel || sql.ISOLATION_LEVEL.SERIALIZABLE);
+
+    const tx = {
+      isNeon: false,
+      executeQuery: async (query, params = []) => {
+        const request = transaction.request();
+        const result = await runAzureQuery(request, query, params);
+        return result.rows;
+      },
+      raw: transaction,
+    };
+
+    const result = await work(tx);
+    await transaction.commit();
+    return result;
+  } catch (error) {
+    try {
+      await transaction.rollback();
+    } catch (_) {
+      // Ignore rollback failures so the original error can surface.
+    }
+    throw error;
+  }
 }
 
 /**
@@ -398,6 +455,106 @@ async function ensureNeonUsersSchemaCompatibility() {
   }
 }
 
+async function ensureQueueSchemaCompatibility() {
+  if (isNeon) {
+    if (!pgPool) throw new Error('Neon DB not initialized. Call initializeDatabase() first');
+
+    const statements = [
+      `DO $$
+       DECLARE
+         constraint_name text;
+         constraint_columns text[];
+       BEGIN
+         FOR constraint_name, constraint_columns IN
+           SELECT
+             tc.constraint_name,
+             array_agg(kcu.column_name ORDER BY kcu.ordinal_position) AS columns
+           FROM information_schema.table_constraints tc
+           JOIN information_schema.key_column_usage kcu
+             ON tc.constraint_name = kcu.constraint_name
+            AND tc.table_schema = kcu.table_schema
+            AND tc.table_name = kcu.table_name
+           WHERE tc.table_schema = 'public'
+             AND tc.table_name = 'queue'
+             AND tc.constraint_type = 'UNIQUE'
+           GROUP BY tc.constraint_name
+         LOOP
+           IF constraint_columns = ARRAY['user_id']::text[] OR constraint_columns = ARRAY['book_id']::text[] THEN
+             EXECUTE format('ALTER TABLE queue DROP CONSTRAINT IF EXISTS %I', constraint_name);
+           END IF;
+         END LOOP;
+       END $$;`,
+      `ALTER TABLE IF EXISTS queue ADD CONSTRAINT queue_user_book_unique UNIQUE (user_id, book_id)`,
+    ];
+
+    for (const statement of statements) {
+      try {
+        await pgPool.query(statement);
+      } catch (error) {
+        console.warn(`⚠️  Queue schema compatibility statement skipped: ${error.message}`);
+      }
+    }
+
+    return;
+  }
+
+  if (!azurePool) throw new Error('Azure DB not initialized. Call initializeDatabase() first');
+
+  try {
+    const pool = getPool();
+    await pool.request().query(`
+      IF COL_LENGTH('dbo.queue', 'notified_at') IS NULL
+      BEGIN
+        ALTER TABLE [dbo].[queue] ADD [notified_at] DATETIME2 NULL;
+      END
+
+      IF COL_LENGTH('dbo.queue', 'expired_at') IS NULL
+      BEGIN
+        ALTER TABLE [dbo].[queue] ADD [expired_at] DATETIME2 NULL;
+      END
+
+      DECLARE @dropSql NVARCHAR(MAX) = N'';
+
+      SELECT @dropSql = @dropSql + N'ALTER TABLE [dbo].[queue] DROP CONSTRAINT ' + QUOTENAME(kc.name) + N';'
+      FROM sys.key_constraints kc
+      INNER JOIN sys.tables t ON t.object_id = kc.parent_object_id
+      INNER JOIN sys.index_columns ic ON ic.object_id = t.object_id AND ic.index_id = kc.unique_index_id
+      INNER JOIN sys.columns c ON c.object_id = t.object_id AND c.column_id = ic.column_id
+      WHERE t.name = 'queue'
+        AND kc.type = 'UQ'
+      GROUP BY kc.name
+      HAVING COUNT(*) = 1 AND MAX(c.name) IN ('user_id', 'book_id');
+
+      IF (@dropSql <> N'')
+      BEGIN
+        EXEC sp_executesql @dropSql;
+      END
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM sys.key_constraints kc
+        INNER JOIN sys.tables t ON t.object_id = kc.parent_object_id
+        INNER JOIN sys.index_columns ic ON ic.object_id = t.object_id AND ic.index_id = kc.unique_index_id
+        INNER JOIN sys.columns c ON c.object_id = t.object_id AND c.column_id = ic.column_id
+        WHERE t.name = 'queue'
+          AND kc.type = 'UQ'
+        GROUP BY kc.name
+        HAVING COUNT(*) = 2
+           AND SUM(CASE WHEN c.name IN ('user_id', 'book_id') THEN 1 ELSE 0 END) = 2
+      )
+      BEGIN
+        IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'queue')
+        BEGIN
+          ALTER TABLE [dbo].[queue]
+          ADD CONSTRAINT [uq_queue_user_book] UNIQUE ([user_id], [book_id]);
+        END
+      END
+    `);
+  } catch (error) {
+    console.warn(`⚠️  Queue schema compatibility skipped: ${error.message}`);
+  }
+}
+
 async function createLoginEventsTable() {
   if (isNeon) {
     console.log('✅ Login events table — auto-create di-skip untuk Neon (pakai schema/runtime)');
@@ -474,7 +631,9 @@ module.exports = {
   initializeDatabase,
   ensureNeonShelfSchemaCompatibility,
   ensureNeonUsersSchemaCompatibility,
+  ensureQueueSchemaCompatibility,
   executeQuery,
+  withTransaction,
   getPool,
   createUsersTable,
   createLoginEventsTable,
