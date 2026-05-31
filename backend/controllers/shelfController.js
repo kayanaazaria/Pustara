@@ -112,9 +112,24 @@ async function resolveActorUserId(req) {
   return String(actor.data.id);
 }
 
-async function getActiveLoan(userId, bookId) {
+async function lockBookRow(tx, bookId) {
+  const query = db.isNeon
+    ? `SELECT id, title, available, total_stock, is_active
+       FROM books
+       WHERE id = $1
+       FOR UPDATE
+       LIMIT 1`
+    : `SELECT TOP 1 id, title, available, total_stock, is_active
+       FROM books WITH (UPDLOCK, ROWLOCK, HOLDLOCK)
+       WHERE id = $1`;
+
+  const rows = toRows(await tx.executeQuery(query, [bookId]));
+  return rows[0] || null;
+}
+
+async function getActiveLoan(userId, bookId, executor = db.executeQuery) {
   const rows = toRows(
-    await db.executeQuery(
+    await executor(
       `SELECT id, user_id, book_id, borrowed_at,
               COALESCE(due_date, due_at) AS due_date,
               due_at,
@@ -131,9 +146,9 @@ async function getActiveLoan(userId, bookId) {
   return rows[0] || null;
 }
 
-async function getActiveLoanById(userId, loanId) {
+async function getActiveLoanById(userId, loanId, executor = db.executeQuery) {
   const rows = toRows(
-    await db.executeQuery(
+    await executor(
       `SELECT id, user_id, book_id, borrowed_at,
               COALESCE(due_date, due_at) AS due_date,
               due_at,
@@ -150,10 +165,10 @@ async function getActiveLoanById(userId, loanId) {
   return rows[0] || null;
 }
 
-async function getWishlistRow(userId, bookId) {
+async function getWishlistRow(userId, bookId, executor = db.executeQuery) {
   try {
     const rows = toRows(
-      await db.executeQuery(
+      await executor(
         `SELECT user_id, book_id, added_at
          FROM wishlist
          WHERE user_id = $1 AND book_id = $2
@@ -165,7 +180,7 @@ async function getWishlistRow(userId, bookId) {
     return rows[0] || null;
   } catch (_) {
     const rows = toRows(
-      await db.executeQuery(
+      await executor(
         `SELECT user_id, book_id, created_at AS added_at
          FROM wishlist
          WHERE user_id = $1 AND book_id = $2
@@ -241,10 +256,10 @@ function normalizeQueueRows(rows) {
   }));
 }
 
-async function getQueueRowsByBook(bookId) {
+async function getQueueRowsByBook(bookId, executor = db.executeQuery) {
   try {
     const rows = toRows(
-      await db.executeQuery(
+      await executor(
         'SELECT * FROM queue WHERE book_id = $1',
         [bookId]
       )
@@ -255,8 +270,8 @@ async function getQueueRowsByBook(bookId) {
   }
 }
 
-async function normalizeQueuePositions(bookId) {
-  const rows = await getQueueRowsByBook(bookId);
+async function normalizeQueuePositions(bookId, executor = db.executeQuery) {
+  const rows = await getQueueRowsByBook(bookId, executor);
 
   for (const row of rows) {
     const current = Number(row?.position || 0);
@@ -264,7 +279,7 @@ async function normalizeQueuePositions(bookId) {
     if (!row?.id || !target || current === target) continue;
 
     try {
-      await db.executeQuery(
+      await executor(
         'UPDATE queue SET position = $1 WHERE id = $2',
         [target, row.id]
       );
@@ -279,28 +294,28 @@ async function normalizeQueuePositions(bookId) {
   }));
 }
 
-async function getQueueEntry(userId, bookId) {
-  const rows = await normalizeQueuePositions(bookId);
+async function getQueueEntry(userId, bookId, executor = db.executeQuery) {
+  const rows = await normalizeQueuePositions(bookId, executor);
   const found = rows.find((row) => String(row.user_id) === String(userId));
   return found || null;
 }
 
-async function getQueueCount(bookId) {
-  const rows = await getQueueRowsByBook(bookId);
+async function getQueueCount(bookId, executor = db.executeQuery) {
+  const rows = await getQueueRowsByBook(bookId, executor);
   return rows.length;
 }
 
-async function removeQueueEntry(userId, bookId) {
-  await db.executeQuery(
+async function removeQueueEntry(userId, bookId, executor = db.executeQuery) {
+  await executor(
     'DELETE FROM queue WHERE user_id = $1 AND book_id = $2',
     [userId, bookId]
   );
-  return normalizeQueuePositions(bookId);
+  return normalizeQueuePositions(bookId, executor);
 }
 
-async function removeQueueEntryById(entryId, bookId) {
-  await db.executeQuery('DELETE FROM queue WHERE id = $1', [entryId]);
-  return normalizeQueuePositions(bookId);
+async function removeQueueEntryById(entryId, bookId, executor = db.executeQuery) {
+  await executor('DELETE FROM queue WHERE id = $1', [entryId]);
+  return normalizeQueuePositions(bookId, executor);
 }
 
 function queueNotifiedAtMs(row) {
@@ -324,11 +339,11 @@ function queueHoldExpired(row) {
   return Date.now() - notifiedAt >= QUEUE_PICKUP_WINDOW_MS;
 }
 
-async function markQueueEntryNotified(entryId) {
+async function markQueueEntryNotified(entryId, executor = db.executeQuery) {
   if (!entryId) return;
 
   try {
-    await db.executeQuery(
+    await executor(
       `UPDATE queue
        SET notified = true,
            notified_at = COALESCE(notified_at, CURRENT_TIMESTAMP)
@@ -337,14 +352,14 @@ async function markQueueEntryNotified(entryId) {
     );
   } catch {
     try {
-      await db.executeQuery('UPDATE queue SET notified = true WHERE id = $1', [entryId]);
+      await executor('UPDATE queue SET notified = true WHERE id = $1', [entryId]);
     } catch {
       // Some deployments may not have queue notification columns yet.
     }
   }
 }
 
-async function notifyQueueEntryAvailable(entry, bookId, bookTitle) {
+async function notifyQueueEntryAvailable(entry, bookId, bookTitle, executor = db.executeQuery) {
   const nextUserId = String(entry?.user_id || '');
   if (!nextUserId) return null;
 
@@ -357,18 +372,18 @@ async function notifyQueueEntryAvailable(entry, bookId, bookTitle) {
     emailSubject: 'Pustara - Buku yang Kamu Antrekan Sudah Tersedia',
   });
 
-  await markQueueEntryNotified(entry.id);
+  await markQueueEntryNotified(entry.id, executor);
   return {
     user_id: nextUserId,
     queue_position: Number(entry.position || entry.normalized_position || 1),
   };
 }
 
-async function expireQueueHold(entry, bookId, bookTitle) {
+async function expireQueueHold(entry, bookId, bookTitle, executor = db.executeQuery) {
   const userId = String(entry?.user_id || '');
   if (!entry?.id || !userId) return;
 
-  await removeQueueEntryById(entry.id, bookId);
+  await removeQueueEntryById(entry.id, bookId, executor);
 
   await notifyUserAndSendEmail({
     userId,
@@ -382,9 +397,9 @@ async function expireQueueHold(entry, bookId, bookTitle) {
   });
 }
 
-async function getBookQueueSnapshot(bookId) {
+async function getBookQueueSnapshot(bookId, executor = db.executeQuery) {
   const rows = toRows(
-    await db.executeQuery(
+    await executor(
       'SELECT id, title, COALESCE(available, 0) AS available FROM books WHERE id = $1 LIMIT 1',
       [bookId]
     )
@@ -392,46 +407,46 @@ async function getBookQueueSnapshot(bookId) {
   return rows[0] || null;
 }
 
-async function reconcileAvailableQueueHold(bookId, providedTitle = null) {
-  const book = await getBookQueueSnapshot(bookId);
+async function reconcileAvailableQueueHold(bookId, providedTitle = null, executor = db.executeQuery) {
+  const book = await getBookQueueSnapshot(bookId, executor);
   const available = Number(book?.available || 0);
   const bookTitle = String(providedTitle || book?.title || 'Buku');
 
   if (available <= 0) {
-    return { book, queueRows: await normalizeQueuePositions(bookId), notifiedUser: null };
+    return { book, queueRows: await normalizeQueuePositions(bookId, executor), notifiedUser: null };
   }
 
   let notifiedUser = null;
   for (let attempt = 0; attempt < 10; attempt += 1) {
-    const queueRows = await normalizeQueuePositions(bookId);
+    const queueRows = await normalizeQueuePositions(bookId, executor);
     const next = queueRows[0];
     if (!next) return { book, queueRows, notifiedUser };
 
     if (isQueueNotified(next)) {
       if (queueHoldExpired(next)) {
-        await expireQueueHold(next, bookId, bookTitle);
+        await expireQueueHold(next, bookId, bookTitle, executor);
         continue;
       }
 
       if (!queueNotifiedAtMs(next)) {
-        await markQueueEntryNotified(next.id);
+        await markQueueEntryNotified(next.id, executor);
       }
 
       return { book, queueRows, notifiedUser };
     }
 
-    notifiedUser = await notifyQueueEntryAvailable(next, bookId, bookTitle).catch((error) => {
+    notifiedUser = await notifyQueueEntryAvailable(next, bookId, bookTitle, executor).catch((error) => {
       console.warn('[Shelf] Queue availability notification warning:', error?.message || error);
       return null;
     });
     if (!notifiedUser && next.id) {
-      await markQueueEntryNotified(next.id);
+      await markQueueEntryNotified(next.id, executor);
     }
 
-    return { book, queueRows: await normalizeQueuePositions(bookId), notifiedUser };
+    return { book, queueRows: await normalizeQueuePositions(bookId, executor), notifiedUser };
   }
 
-  return { book, queueRows: await normalizeQueuePositions(bookId), notifiedUser };
+  return { book, queueRows: await normalizeQueuePositions(bookId, executor), notifiedUser };
 }
 
 async function getBooksWithAvailableQueuedCopies() {
@@ -489,8 +504,49 @@ async function ensureReadingSession(userId, bookId) {
   return createdRows[0] || null;
 }
 
+async function ensureReadingSessionTx(userId, bookId, executor = db.executeQuery) {
+  const existingRows = toRows(
+    await executor(
+      `SELECT id
+       FROM reading_sessions
+       WHERE user_id = $1 AND book_id = $2 AND status IN ('reading', 'active')
+       ORDER BY started_at DESC
+       LIMIT 1`,
+      [userId, bookId]
+    )
+  );
+
+  if (existingRows.length > 0) return existingRows[0];
+
+  const bookRows = toRows(
+    await executor(
+      'SELECT pages FROM books WHERE id = $1 AND is_active = true LIMIT 1',
+      [bookId]
+    )
+  );
+  const totalPages = Number(bookRows[0]?.pages || 0);
+
+  const initialPage = totalPages > 0 ? 1 : 0;
+
+  const createdRows = toRows(
+    await executor(
+      `INSERT INTO reading_sessions
+       (user_id, book_id, current_page, total_pages, progress_percentage, status, started_at)
+       VALUES ($1, $2, $3, $4, 0, 'reading', CURRENT_TIMESTAMP)
+       RETURNING id, started_at`,
+      [userId, bookId, initialPage, totalPages]
+    )
+  );
+
+  return createdRows[0] || null;
+}
+
 async function notifyUserAndSendEmail({ userId, type, title, body, bookId = null, emailSubject }) {
   await insertNotification({ userId, type, title, body, bookId });
+
+  if (String(process.env.SMTP_ENABLED || 'true').toLowerCase() === 'false') {
+    return { sent: false, reason: 'smtp disabled' };
+  }
 
   const contact = await getUserContact(userId);
   if (!contact?.email) return;
@@ -514,8 +570,8 @@ async function notifyUserAndSendEmail({ userId, type, title, body, bookId = null
   }
 }
 
-async function notifyNextQueuedUser(bookId, bookTitle) {
-  const result = await reconcileAvailableQueueHold(bookId, bookTitle);
+async function notifyNextQueuedUser(bookId, bookTitle, executor = db.executeQuery) {
+  const result = await reconcileAvailableQueueHold(bookId, bookTitle, executor);
   if (result.notifiedUser) return result.notifiedUser;
 
   const next = result.queueRows?.[0];
@@ -574,138 +630,148 @@ exports.borrowBook = async (req, res) => {
     }
 
     const { bookId } = req.params;
-    const bookRows = toRows(
-      await db.executeQuery(
-        'SELECT id, title, available, is_active FROM books WHERE id = $1 LIMIT 1',
+    let postCommitNotification = null;
+    const result = await db.withTransaction(async (tx) => {
+      const book = await lockBookRow(tx, bookId);
+      if (!book || !book.is_active) {
+        return { status: 404, body: { success: false, message: 'Book not found' } };
+      }
+
+      const existingLoan = await getActiveLoan(actorUserId, bookId, tx.executeQuery);
+      if (existingLoan) {
+        await ensureReadingSessionTx(actorUserId, bookId, tx.executeQuery);
+        return {
+          status: 200,
+          body: {
+            success: true,
+            message: 'Book already borrowed',
+            data: {
+              loan_id: String(existingLoan.id),
+              borrowed: true,
+              due_date: existingLoan.due_date || existingLoan.due_at || null,
+            },
+          },
+        };
+      }
+
+      await reconcileAvailableQueueHold(bookId, book.title, tx.executeQuery);
+      const existingQueueEntry = await getQueueEntry(actorUserId, bookId, tx.executeQuery);
+      const available = Number(book.available || 0);
+
+      if (available <= 0) {
+        const queueCount = await getQueueCount(bookId, tx.executeQuery);
+        return {
+          status: 409,
+          body: {
+            success: false,
+            message: 'Book is not available right now',
+            data: {
+              queued: Boolean(existingQueueEntry),
+              queue_position: existingQueueEntry ? Number(existingQueueEntry.position || existingQueueEntry.normalized_position || 0) : null,
+              queue_count: Number(queueCount || 0),
+            },
+          },
+        };
+      }
+
+      const queueCount = await getQueueCount(bookId, tx.executeQuery);
+      if (queueCount > 0) {
+        const userQueuePosition = existingQueueEntry
+          ? Number(existingQueueEntry.position || existingQueueEntry.normalized_position || 0)
+          : null;
+
+        if (!existingQueueEntry) {
+          return {
+            status: 409,
+            body: {
+              success: false,
+              message: 'Ada antrean aktif untuk buku ini. Silakan bergabung ke antrean terlebih dahulu.',
+              data: {
+                queued: false,
+                queue_position: null,
+                queue_count: queueCount,
+              },
+            },
+          };
+        }
+
+        if (userQueuePosition !== 1) {
+          return {
+            status: 409,
+            body: {
+              success: false,
+              message: `Belum giliran kamu. Posisi antreanmu saat ini: ${userQueuePosition} dari ${queueCount}.`,
+              data: {
+                queued: true,
+                queue_position: userQueuePosition,
+                queue_count: queueCount,
+              },
+            },
+          };
+        }
+      }
+
+      const dueDateRows = toRows(await tx.executeQuery("SELECT CURRENT_TIMESTAMP + INTERVAL '7 days' AS due_date"));
+      const dueDate = dueDateRows[0]?.due_date || null;
+
+      const loanRows = toRows(
+        await tx.executeQuery(
+          `INSERT INTO loans (user_id, book_id, borrowed_at, due_at, returned_at)
+           VALUES ($1, $2, CURRENT_TIMESTAMP, $3, NULL)
+           RETURNING id, borrowed_at, COALESCE(due_date, due_at) AS due_date, due_at`,
+          [actorUserId, bookId, dueDate]
+        )
+      );
+
+      await tx.executeQuery(
+        'UPDATE books SET available = GREATEST(COALESCE(available, 0) - 1, 0) WHERE id = $1',
         [bookId]
-      )
-    );
+      );
 
-    if (bookRows.length === 0 || !bookRows[0].is_active) {
-      return res.status(404).json({ success: false, message: 'Book not found' });
-    }
-
-    const book = bookRows[0];
-    const available = Number(book.available || 0);
-
-    const existingLoan = await getActiveLoan(actorUserId, bookId);
-    if (existingLoan) {
-      await ensureReadingSession(actorUserId, bookId);
-      return res.json({
-        success: true,
-        message: 'Book already borrowed',
-        data: {
-          loan_id: String(existingLoan.id),
-          borrowed: true,
-          due_date: existingLoan.due_date || existingLoan.due_at || null,
-        },
+      await ensureReadingSessionTx(actorUserId, bookId, tx.executeQuery);
+      await removeQueueEntry(actorUserId, bookId, tx.executeQuery).catch(() => {
+        // Queue cleanup should not block successful borrow.
       });
-    }
 
-    await reconcileAvailableQueueHold(bookId, book.title);
-    const existingQueueEntry = await getQueueEntry(actorUserId, bookId);
-
-    if (available <= 0) {
-      const queueCount = await getQueueCount(bookId);
-      return res.status(409).json({
-        success: false,
-        message: 'Book is not available right now',
-        data: {
-          queued: Boolean(existingQueueEntry),
-          queue_position: existingQueueEntry ? Number(existingQueueEntry.position || existingQueueEntry.normalized_position || 0) : null,
-          queue_count: Number(queueCount || 0),
-        },
-      });
-    }
-
-    // ── Queue-priority enforcement ─────────────────────────────────────────
-    // If there is an active queue for this book, only the person at position 1
-    // may borrow. Everyone else (queued at position > 1, or not queued at all)
-    // must wait for their turn.
-    const queueCount = await getQueueCount(bookId);
-    if (queueCount > 0) {
-      const userQueuePosition = existingQueueEntry
-        ? Number(existingQueueEntry.position || existingQueueEntry.normalized_position || 0)
-        : null;
-
-      if (!existingQueueEntry) {
-        // User is not in queue at all — cannot bypass people who are waiting
-        return res.status(409).json({
-          success: false,
-          message: 'Ada antrean aktif untuk buku ini. Silakan bergabung ke antrean terlebih dahulu.',
-          data: {
-            queued: false,
-            queue_position: null,
-            queue_count: queueCount,
-          },
+      if (req.user?.uid) {
+        pushActivity(req.user.uid, bookId, 'read').catch((err) => {
+          console.warn('[Shelf] pushActivity(read) warning:', err?.message || err);
         });
       }
 
-      if (userQueuePosition !== 1) {
-        // User is in queue but not yet at the front
-        return res.status(409).json({
-          success: false,
-          message: `Belum giliran kamu. Posisi antreanmu saat ini: ${userQueuePosition} dari ${queueCount}.`,
+      const loan = loanRows[0] || {};
+
+      postCommitNotification = {
+        userId: actorUserId,
+        type: 'borrow',
+        title: 'Peminjaman Berhasil',
+        body: `Buku \"${book.title}\" berhasil dipinjam. Tenggat pengembalian: 7 hari dari sekarang.`,
+        bookId,
+        emailSubject: 'Pustara - Konfirmasi Peminjaman Buku',
+      };
+
+      return {
+        status: 201,
+        body: {
+          success: true,
+          message: 'Book borrowed successfully',
           data: {
-            queued: true,
-            queue_position: userQueuePosition,
-            queue_count: queueCount,
+            loan_id: loan.id ? String(loan.id) : null,
+            borrowed: true,
+            borrowed_at: loan.borrowed_at || null,
+            due_date: loan.due_date || loan.due_at || dueDate,
           },
-        });
-      }
-      // userQueuePosition === 1 → allowed to borrow, continue below
-    }
-    // ── end queue-priority enforcement ────────────────────────────────────
-
-    const dueDateRows = toRows(await db.executeQuery("SELECT CURRENT_TIMESTAMP + INTERVAL '7 days' AS due_date"));
-    const dueDate = dueDateRows[0]?.due_date || null;
-
-    const loanRows = toRows(
-      await db.executeQuery(
-        `INSERT INTO loans (user_id, book_id, borrowed_at, due_at, returned_at)
-         VALUES ($1, $2, CURRENT_TIMESTAMP, $3, NULL)
-         RETURNING id, borrowed_at, COALESCE(due_date, due_at) AS due_date, due_at`,
-        [actorUserId, bookId, dueDate]
-      )
-    );
-
-    await db.executeQuery(
-      'UPDATE books SET available = GREATEST(COALESCE(available, 0) - 1, 0) WHERE id = $1',
-      [bookId]
-    );
-
-    await ensureReadingSession(actorUserId, bookId);
-    await removeQueueEntry(actorUserId, bookId).catch(() => {
-      // Queue cleanup should not block successful borrow.
+        },
+      };
     });
 
-    if (req.user?.uid) {
-      pushActivity(req.user.uid, bookId, 'read').catch((err) => {
-        console.warn('[Shelf] pushActivity(read) warning:', err?.message || err);
+    if (postCommitNotification) {
+      await notifyUserAndSendEmail(postCommitNotification).catch((error) => {
+        console.warn('[Shelf] Post-borrow notification warning:', error?.message || error);
       });
     }
 
-    const loan = loanRows[0] || {};
-
-    await notifyUserAndSendEmail({
-      userId: actorUserId,
-      type: 'borrow',
-      title: 'Peminjaman Berhasil',
-      body: `Buku \"${book.title}\" berhasil dipinjam. Tenggat pengembalian: 7 hari dari sekarang.`,
-      bookId,
-      emailSubject: 'Pustara - Konfirmasi Peminjaman Buku',
-    });
-
-    res.status(201).json({
-      success: true,
-      message: 'Book borrowed successfully',
-      data: {
-        loan_id: loan.id ? String(loan.id) : null,
-        borrowed: true,
-        borrowed_at: loan.borrowed_at || null,
-        due_date: loan.due_date || loan.due_at || dueDate,
-      },
-    });
+    return res.status(result.status).json(result.body);
   } catch (error) {
     console.error('Error borrowing book:', error.message);
     res.status(500).json({ success: false, message: 'Failed to borrow book', error: error.message });
@@ -724,97 +790,115 @@ exports.returnBook = async (req, res) => {
       return res.status(400).json({ success: false, message: 'loanId or bookId is required' });
     }
 
-    let activeLoan = await getActiveLoanById(actorUserId, loanOrBookId);
-    if (!activeLoan) {
-      activeLoan = await getActiveLoan(actorUserId, loanOrBookId);
-    }
+    let postCommitNotification = null;
+    const result = await db.withTransaction(async (tx) => {
+      let activeLoan = await getActiveLoanById(actorUserId, loanOrBookId, tx.executeQuery);
+      if (!activeLoan) {
+        activeLoan = await getActiveLoan(actorUserId, loanOrBookId, tx.executeQuery);
+      }
 
-    if (!activeLoan) {
-      return res.json({
-        success: true,
-        message: 'No active loan found',
-        data: { borrowed: false, returned: true },
+      if (!activeLoan) {
+        return {
+          status: 200,
+          body: {
+            success: true,
+            message: 'No active loan found',
+            data: { borrowed: false, returned: true },
+          },
+        };
+      }
+
+      const book = await lockBookRow(tx, activeLoan.book_id);
+      if (!book) {
+        return { status: 404, body: { success: false, message: 'Book not found' } };
+      }
+
+      const sessionRows = toRows(
+        await tx.executeQuery(
+          `SELECT id, status, current_page, total_pages, progress_percentage, finished_at
+           FROM reading_sessions
+           WHERE user_id = $1 AND book_id = $2
+           ORDER BY COALESCE(finished_at, last_read_at, started_at) DESC
+           LIMIT 1`,
+          [actorUserId, activeLoan.book_id]
+        )
+      );
+      const latestSession = sessionRows[0] || null;
+      const progressPercentage = Number(latestSession?.progress_percentage || 0);
+      const currentPage = Number(latestSession?.current_page || 0);
+      const totalPages = Number(latestSession?.total_pages || 0);
+      const sessionIsFinished = Boolean(
+        latestSession && (
+          String(latestSession.status || '').toLowerCase() === 'finished' ||
+          progressPercentage >= 100 ||
+          (totalPages > 0 && currentPage >= totalPages)
+        )
+      );
+
+      await tx.executeQuery(
+        `UPDATE loans
+         SET returned_at = CURRENT_TIMESTAMP, status = 'returned'
+         WHERE id = $1 AND user_id = $2 AND returned_at IS NULL`,
+        [activeLoan.id, actorUserId]
+      );
+
+      await tx.executeQuery(
+        'UPDATE books SET available = LEAST(COALESCE(available, 0) + 1, COALESCE(total_stock, available + 1)) WHERE id = $1',
+        [activeLoan.book_id]
+      );
+
+      if (latestSession?.id) {
+        await tx.executeQuery(
+          sessionIsFinished
+            ? `UPDATE reading_sessions
+               SET status = 'finished',
+                   finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP),
+                   progress_percentage = GREATEST(COALESCE(progress_percentage, 0), 100)
+               WHERE id = $1 AND user_id = $2`
+            : `UPDATE reading_sessions
+               SET status = CASE WHEN status = 'finished' THEN status ELSE 'paused' END
+               WHERE id = $1 AND user_id = $2 AND status IN ('reading', 'active', 'paused')`,
+          [latestSession.id, actorUserId]
+        );
+      }
+
+      const returnedTitle = String(book.title || 'Buku');
+      void notifyNextQueuedUser(activeLoan.book_id, returnedTitle, tx.executeQuery).catch((error) => {
+        console.warn('[Shelf] Queue notification warning:', error?.message || error);
+      });
+
+      postCommitNotification = {
+        userId: actorUserId,
+        type: 'system',
+        title: 'Pengembalian Berhasil',
+        body: `Buku \"${returnedTitle}\" sudah berhasil dikembalikan. Terima kasih sudah membaca di Pustara.`,
+        bookId: activeLoan.book_id,
+        emailSubject: 'Pustara - Pengembalian Buku Berhasil',
+      };
+
+      return {
+        status: 200,
+        body: {
+          success: true,
+          message: 'Book returned successfully',
+          data: {
+            loan_id: String(activeLoan.id),
+            book_id: String(activeLoan.book_id || ''),
+            borrowed: false,
+            returned: true,
+            queue_notified_user_id: null,
+          },
+        },
+      };
+    });
+
+    if (postCommitNotification) {
+      void notifyUserAndSendEmail(postCommitNotification).catch((error) => {
+        console.warn('[Shelf] Post-return notification warning:', error?.message || error);
       });
     }
 
-    const sessionRows = toRows(
-      await db.executeQuery(
-        `SELECT id, status, current_page, total_pages, progress_percentage, finished_at
-         FROM reading_sessions
-         WHERE user_id = $1 AND book_id = $2
-         ORDER BY COALESCE(finished_at, last_read_at, started_at) DESC
-         LIMIT 1`,
-        [actorUserId, activeLoan.book_id]
-      )
-    );
-    const latestSession = sessionRows[0] || null;
-    const progressPercentage = Number(latestSession?.progress_percentage || 0);
-    const currentPage = Number(latestSession?.current_page || 0);
-    const totalPages = Number(latestSession?.total_pages || 0);
-    const sessionIsFinished = Boolean(
-      latestSession && (
-        String(latestSession.status || '').toLowerCase() === 'finished' ||
-        progressPercentage >= 100 ||
-        (totalPages > 0 && currentPage >= totalPages)
-      )
-    );
-
-    await db.executeQuery(
-      `UPDATE loans
-       SET returned_at = CURRENT_TIMESTAMP, status = 'returned'
-       WHERE id = $1 AND user_id = $2 AND returned_at IS NULL`,
-      [activeLoan.id, actorUserId]
-    );
-
-    await db.executeQuery(
-      'UPDATE books SET available = LEAST(COALESCE(available, 0) + 1, COALESCE(total_stock, available + 1)) WHERE id = $1',
-      [activeLoan.book_id]
-    );
-
-    if (latestSession?.id) {
-      await db.executeQuery(
-        sessionIsFinished
-          ? `UPDATE reading_sessions
-             SET status = 'finished',
-                 finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP),
-                 progress_percentage = GREATEST(COALESCE(progress_percentage, 0), 100)
-             WHERE id = $1 AND user_id = $2`
-          : `UPDATE reading_sessions
-             SET status = CASE WHEN status = 'finished' THEN status ELSE 'paused' END
-             WHERE id = $1 AND user_id = $2 AND status IN ('reading', 'active', 'paused')`,
-        [latestSession.id, actorUserId]
-      );
-    }
-    
-    const returnedBookRows = toRows(
-      await db.executeQuery('SELECT title FROM books WHERE id = $1 LIMIT 1', [activeLoan.book_id])
-    );
-    const returnedTitle = String(returnedBookRows[0]?.title || 'Buku');
-    const queueNotification = await notifyNextQueuedUser(activeLoan.book_id, returnedTitle).catch((error) => {
-      console.warn('[Shelf] Queue notification warning:', error?.message || error);
-      return null;
-    });
-
-    await notifyUserAndSendEmail({
-      userId: actorUserId,
-      type: 'system',
-      title: 'Pengembalian Berhasil',
-      body: `Buku \"${returnedTitle}\" sudah berhasil dikembalikan. Terima kasih sudah membaca di Pustara.`,
-      bookId: activeLoan.book_id,
-      emailSubject: 'Pustara - Pengembalian Buku Berhasil',
-    });
-
-    res.json({
-      success: true,
-      message: 'Book returned successfully',
-      data: {
-        loan_id: String(activeLoan.id),
-        book_id: String(activeLoan.book_id || ''),
-        borrowed: false,
-        returned: true,
-        queue_notified_user_id: queueNotification?.user_id || null,
-      },
-    });
+    return res.status(result.status).json(result.body);
   } catch (error) {
     console.error('Error returning book:', error.message);
     res.status(500).json({ success: false, message: 'Failed to return book', error: error.message });
@@ -1203,68 +1287,82 @@ exports.joinQueue = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Book not found' });
     }
 
-    const book = bookRows[0];
-    await reconcileAvailableQueueHold(bookId, book.title);
-    const available = Number(book.available || 0);
-    if (available > 0) {
-      const queueCount = await getQueueCount(bookId);
-      if (queueCount === 0) {
-        return res.status(409).json({ success: false, message: 'Book is available right now. Borrow directly instead of queueing.' });
+    const result = await db.withTransaction(async (tx) => {
+      const book = await lockBookRow(tx, bookId);
+      if (!book || !book.is_active) {
+        return { status: 404, body: { success: false, message: 'Book not found' } };
       }
-    }
 
-    const existingLoan = await getActiveLoan(actorUserId, bookId);
-    if (existingLoan) {
-      return res.status(409).json({ success: false, message: 'Book is already borrowed by this user' });
-    }
+      await reconcileAvailableQueueHold(bookId, book.title, tx.executeQuery);
+      const existingLoan = await getActiveLoan(actorUserId, bookId, tx.executeQuery);
+      if (existingLoan) {
+        return { status: 409, body: { success: false, message: 'Book is already borrowed by this user' } };
+      }
 
-    const existingQueueEntry = await getQueueEntry(actorUserId, bookId);
-    if (existingQueueEntry) {
-      const queueCount = await getQueueCount(bookId);
-      return res.json({
-        success: true,
-        message: 'Already in queue',
-        data: {
-          queued: true,
-          queue_position: Number(existingQueueEntry.position || existingQueueEntry.normalized_position || 0),
-          queue_count: Number(queueCount || 0),
-        },
-      });
-    }
+      const available = Number(book.available || 0);
+      const existingQueueEntry = await getQueueEntry(actorUserId, bookId, tx.executeQuery);
+      const queueCount = await getQueueCount(bookId, tx.executeQuery);
 
-    const queueRows = await normalizeQueuePositions(bookId);
-    const nextPosition = queueRows.length + 1;
+      if (available > 0 && queueCount === 0) {
+        return { status: 409, body: { success: false, message: 'Book is available right now. Borrow directly instead of queueing.' } };
+      }
 
-    await db.executeQuery(
-      'INSERT INTO queue (user_id, book_id, position) VALUES ($1, $2, $3)',
-      [actorUserId, bookId, nextPosition]
-    );
+      if (existingQueueEntry) {
+        return {
+          status: 200,
+          body: {
+            success: true,
+            message: 'Already in queue',
+            data: {
+              queued: true,
+              queue_position: Number(existingQueueEntry.position || existingQueueEntry.normalized_position || 0),
+              queue_count: Number(queueCount || 0),
+            },
+          },
+        };
+      }
 
-    const updatedEntry = await getQueueEntry(actorUserId, bookId);
-    const queueCount = await getQueueCount(bookId);
+      const queueRows = await normalizeQueuePositions(bookId, tx.executeQuery);
+      const nextPosition = queueRows.length + 1;
 
-    try {
-      await notifyUserAndSendEmail({
+      await tx.executeQuery(
+        'INSERT INTO queue (user_id, book_id, position) VALUES ($1, $2, $3)',
+        [actorUserId, bookId, nextPosition]
+      );
+
+      const updatedEntry = await getQueueEntry(actorUserId, bookId, tx.executeQuery);
+      const updatedQueueCount = await getQueueCount(bookId, tx.executeQuery);
+
+      postCommitNotification = {
         userId: actorUserId,
         type: 'queue',
         title: 'Berhasil Masuk Antrean',
         body: `Kamu masuk antrean untuk buku "${book.title}". Posisi antreanmu saat ini: ${updatedEntry?.position || updatedEntry?.normalized_position || nextPosition}.`,
         bookId,
         emailSubject: 'Pustara - Konfirmasi Antrean Buku',
+      };
+
+      return {
+        status: 201,
+        body: {
+          success: true,
+          message: 'Successfully joined queue',
+          data: {
+            queued: true,
+            queue_position: Number(updatedEntry?.position || updatedEntry?.normalized_position || nextPosition),
+            queue_count: Number(updatedQueueCount || nextPosition),
+          },
+        },
+      };
+    });
+
+    if (postCommitNotification) {
+      await notifyUserAndSendEmail(postCommitNotification).catch((error) => {
+        console.warn('[Shelf] Post-queue notification warning:', error?.message || error);
       });
-    } catch (notificationError) {
-      console.warn('Queue notification failed after successful join:', notificationError.message);
     }
 
-    return res.status(201).json({
-      success: true,
-      message: 'Successfully joined queue',
-      data: {
-        queued: true,
-        queue_position: Number(updatedEntry?.position || updatedEntry?.normalized_position || nextPosition),
-        queue_count: Number(queueCount || nextPosition),
-      },
-    });
+    return res.status(result.status).json(result.body);
   } catch (error) {
     const message = String(error?.message || 'Failed to join queue');
 
@@ -1285,32 +1383,50 @@ exports.leaveQueue = async (req, res) => {
     }
 
     const { bookId } = req.params;
-    const existingQueueEntry = await getQueueEntry(actorUserId, bookId);
+    let postCommitNotification = null;
+    const result = await db.withTransaction(async (tx) => {
+      const book = await lockBookRow(tx, bookId);
+      if (!book || !book.is_active) {
+        return { status: 404, body: { success: false, message: 'Book not found' } };
+      }
 
-    if (!existingQueueEntry) {
-      return res.json({
-        success: true,
-        message: 'User was not in queue',
-        data: {
-          queued: false,
-          queue_position: null,
-          queue_count: await getQueueCount(bookId),
+      const existingQueueEntry = await getQueueEntry(actorUserId, bookId, tx.executeQuery);
+
+      if (!existingQueueEntry) {
+        postCommitNotification = {
+          userId: actorUserId,
+          type: 'queue',
+          title: 'Berhasil Masuk Antrean',
+          body: `Kamu masuk antrean untuk buku "${book.title}". Posisi antreanmu saat ini: ${updatedEntry?.position || updatedEntry?.normalized_position || nextPosition}.`,
+          bookId,
+          emailSubject: 'Pustara - Konfirmasi Antrean Buku',
+        };
+      }
+
+      await removeQueueEntry(actorUserId, bookId, tx.executeQuery);
+      const queueCount = await getQueueCount(bookId, tx.executeQuery);
+
+      return {
+        status: 200,
+        body: {
+          success: true,
+          message: 'Successfully left queue',
+          data: {
+            queued: false,
+            queue_position: null,
+            queue_count: Number(queueCount || 0),
+          },
         },
+      };
+    });
+
+    if (postCommitNotification) {
+      await notifyUserAndSendEmail(postCommitNotification).catch((error) => {
+        console.warn('[Shelf] Post-queue notification warning:', error?.message || error);
       });
     }
 
-    await removeQueueEntry(actorUserId, bookId);
-    const queueCount = await getQueueCount(bookId);
-
-    return res.json({
-      success: true,
-      message: 'Successfully left queue',
-      data: {
-        queued: false,
-        queue_position: null,
-        queue_count: Number(queueCount || 0),
-      },
-    });
+    return res.status(result.status).json(result.body);
   } catch (error) {
     console.error('Error leaving queue:', error.message);
     return res.status(500).json({ success: false, message: 'Failed to leave queue', error: error.message });

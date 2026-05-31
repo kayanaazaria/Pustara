@@ -42,6 +42,7 @@ const {
   initializeDatabase,
   ensureNeonShelfSchemaCompatibility,
   ensureNeonUsersSchemaCompatibility,
+  ensureQueueSchemaCompatibility,
   createLoginEventsTable,
   createUsersTable,
   createUserSurveyTable,
@@ -59,6 +60,7 @@ const userRoutes = require('./routes/userRoutes');
 const shelfRoutes = require('./routes/shelfRoutes');
 const feedRoutes = require('./routes/feedRoutes');
 const reviewsRoutes = require('./routes/reviewsRoutes');
+const mediaRoutes = require('./routes/mediaRoutes');
 
 require('./jobs/cron'); //init cron jobs for ai-related tasks
 
@@ -201,6 +203,9 @@ app.use('/community', optionalVerifyTokenMiddleware, reviewsRoutes);
 // User Social/Profile Routes (allow optional auth for actor-aware responses)
 app.use('/users', optionalVerifyTokenMiddleware, userRoutes);
 
+// Media proxy routes (avatars, covers, and other allowed storage assets)
+app.use('/media', mediaRoutes);
+
 // Analytics Routes (stats & dashboard)
 app.use('/stats', analyticsRoutes);
 
@@ -233,6 +238,11 @@ async function startServer() {
       await ensureNeonUsersSchemaCompatibility();
     } catch (schemaError) {
       console.warn(`⚠️  Users schema compatibility check skipped: ${schemaError.message}`);
+    }
+    try {
+      await ensureQueueSchemaCompatibility();
+    } catch (schemaError) {
+      console.warn(`⚠️  Queue schema compatibility check skipped: ${schemaError.message}`);
     }
     try {
       await createLoginEventsTable();

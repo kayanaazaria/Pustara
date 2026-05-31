@@ -144,11 +144,13 @@ CREATE INDEX [idx_notif_created_at] ON [dbo].[notifications]([created_at]);
 -- =========================================
 CREATE TABLE [dbo].[queue] (
     [id] UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
-    [user_id] UNIQUEIDENTIFIER UNIQUE NOT NULL,
-    [book_id] UNIQUEIDENTIFIER UNIQUE NOT NULL,
+    [user_id] UNIQUEIDENTIFIER NOT NULL,
+    [book_id] UNIQUEIDENTIFIER NOT NULL,
     [position] INT NOT NULL,
     [joined_at] DATETIME2 DEFAULT GETDATE(),
     [notified] BIT DEFAULT 0,
+    [notified_at] DATETIME2 NULL,
+    [expired_at] DATETIME2 NULL,
     UNIQUE ([user_id], [book_id]),
     CONSTRAINT [fk_queue_user] FOREIGN KEY ([user_id]) REFERENCES [dbo].[users]([id]) ON DELETE CASCADE,
     CONSTRAINT [fk_queue_book] FOREIGN KEY ([book_id]) REFERENCES [dbo].[books]([id]) ON DELETE CASCADE

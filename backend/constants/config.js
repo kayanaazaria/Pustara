@@ -8,13 +8,23 @@ const CONFIG = {
   NODE_ENV: process.env.NODE_ENV || "development",
 
   // CORS
-  CORS_ORIGINS: Array.from(new Set([
-    ...(process.env.CORS_ORIGINS
-      ? process.env.CORS_ORIGINS.split(",").map(origin => origin.trim())
-      : ["http://localhost:3000", "http://localhost:3001"]),
-    "https://pustara.vercel.app",
-    "https://pustara-deployfe.vercel.app",  // ✅ Frontend Vercel deployment
-  ])),
+  // Parse CORS_ORIGINS from env. Accepts comma or semicolon separated list,
+  // tolerates stray spaces, quotes and empty entries. Falls back to localhost.
+  CORS_ORIGINS: (() => {
+    const raw = process.env.CORS_ORIGINS || '';
+    const parsed = raw
+      ? raw
+          .split(/[;,]+/) // allow comma or semicolon separators
+          .map(s => s.trim().replace(/^\"|\"$|^\'|\'$/g, '')) // trim and strip surrounding quotes
+          .filter(Boolean)
+      : ["http://localhost:3000", "http://localhost:3001"];
+
+    return Array.from(new Set([
+      ...parsed,
+      "https://pustara.vercel.app",
+      "https://pustara-deployfe.vercel.app",
+    ]));
+  })(),
     
   // Firebase
   FIREBASE_PROJECT_ID: process.env.FIREBASE_PROJECT_ID,
