@@ -292,6 +292,12 @@ async function resolveActiveLoanAccess(firebaseUid, bookId) {
   };
 }
 
+function buildAvatarProxyUrl(userId, avatarPath, avatarUrl) {
+  const hasAvatar = avatarPath || avatarUrl;
+  if (!hasAvatar || !userId) return null;
+  return `/users/${encodeURIComponent(String(userId))}/avatar`;
+}
+
 // // GET /books/:id/reviews - Get book reviews
 exports.getBookReviews = async (req, res) => {
   let phase = 'init';
@@ -374,6 +380,7 @@ exports.getBookReviews = async (req, res) => {
         u.username as username,
         COALESCE(u.display_name, u.username) as name,
         u.avatar_url,
+        u.avatar_path,
         COALESCE(u.display_name, u.username, 'U') as avatar,
         (SELECT CAST(COUNT(*) AS INT) FROM review_likes rl2 WHERE CAST(rl2.review_id AS TEXT) = CAST(r.id AS TEXT)) as likes,
         u.firebase_uid as firebase_uid,
@@ -423,15 +430,21 @@ exports.getBookReviews = async (req, res) => {
     const countRows = toRows(countResult);
     const totalReviews = Number.parseInt(String(countRows[0]?.total || 0), 10) || 0;
 
+    const normalizedReviews = reviews.map((row) => ({
+      ...row,
+      avatar_url: buildAvatarProxyUrl(row.user_id, row.avatar_path, row.avatar_url),
+    }));
+
     const responsePayload = {
       success: true,
-      data: reviews,
+      data: normalizedReviews,
       pagination: {
         limit: limitNum,
         offset: offsetNum,
         total: totalReviews,
       },
     };
+
 
     console.log('[BookReviews] SENDING RESPONSE:', {
       success: true,

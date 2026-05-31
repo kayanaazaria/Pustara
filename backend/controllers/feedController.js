@@ -13,6 +13,12 @@ function toRows(result) {
   return [];
 }
 
+function buildAvatarProxyUrl(userId, avatarPath, avatarUrl) {
+  const hasAvatar = avatarPath || avatarUrl;
+  if (!hasAvatar || !userId) return null;
+  return `/users/${encodeURIComponent(String(userId))}/avatar`;
+}
+
 function parseStringArray(value) {
   // Explicit null/undefined check
   if (!value) return [];
@@ -103,7 +109,7 @@ const actorScope = includeNetwork
       rs.id as session_id, rs.status, rs.current_page, rs.total_pages,
       rs.progress_percentage, rs.started_at, rs.finished_at, rs.last_read_at,
       rs.reading_time_minutes,
-      u.id AS actor_id, u.display_name, u.avatar_url,
+      u.id AS actor_id, u.display_name, u.avatar_url, u.avatar_path,
       NULL::text AS review_text,
       NULL::uuid AS review_id,
       COALESCE(rs.last_read_at, rs.finished_at, rs.started_at) AS event_time
@@ -121,7 +127,7 @@ const wishlistQueryAddedAt = `SELECT
       0 AS progress_percentage,
       NULL AS started_at, NULL AS finished_at, NULL AS last_read_at,
       0 AS reading_time_minutes,
-      u.id AS actor_id, u.display_name, u.avatar_url,
+      u.id AS actor_id, u.display_name, u.avatar_url, u.avatar_path,
       NULL::text AS review_text,
       NULL::uuid AS review_id,
       w.added_at AS event_time
@@ -138,7 +144,7 @@ const reviewQuery = `SELECT
       0 AS progress_percentage,
       NULL AS started_at, NULL AS finished_at, NULL AS last_read_at,
       COALESCE(r.likes, 0) AS reading_time_minutes,
-      u.id AS actor_id, u.display_name, u.avatar_url,
+      u.id AS actor_id, u.display_name, u.avatar_url, u.avatar_path,
       r.body AS review_text,
       r.id AS review_id,
       r.created_at AS event_time
@@ -236,7 +242,7 @@ exports.getMyFeedActivity = async (req, res) => {
         last_read_at: row.last_read_at || null,
         reading_time_minutes: Number(row.reading_time_minutes || 0),
         actor_name: row.display_name || 'User',
-        actor_avatar: row.avatar_url || null,
+        actor_avatar: buildAvatarProxyUrl(row.actor_id, row.avatar_path, row.avatar_url),
         timestamp: row.event_time || row.last_read_at || row.finished_at || row.started_at,
       };
 
@@ -561,7 +567,7 @@ exports.getMyRecommendations = async (req, res) => {
     // Get recommended users
     const recommendedUserRows = toRows(
       await db.executeQuery(
-        `SELECT u.id, u.display_name, u.username, u.avatar_url, u.bio,
+        `SELECT u.id, u.display_name, u.username, u.avatar_url, u.avatar_path, u.bio,
                 COUNT(DISTINCT rs.book_id) as books_count
          FROM users u
          LEFT JOIN reading_sessions rs ON rs.user_id = u.id AND rs.status IN ('reading', 'finished')
@@ -569,7 +575,7 @@ exports.getMyRecommendations = async (req, res) => {
            AND u.id NOT IN (
              SELECT following_id FROM follows WHERE follower_id = $1
            )
-         GROUP BY u.id
+         GROUP BY u.id, u.avatar_path
          ORDER BY books_count DESC, u.created_at DESC
          LIMIT $2`,
         [actorUserId, limit]
@@ -581,7 +587,7 @@ exports.getMyRecommendations = async (req, res) => {
         id: String(row.id || ''),
         name: String(row.display_name || row.username || 'User'),
         username: String(row.username || ''),
-        avatar: row.avatar_url || null,
+        avatar: buildAvatarProxyUrl(row.id, row.avatar_path, row.avatar_url),
         bio: row.bio || '',
         books_count: Number(row.books_count || 0),
       })),

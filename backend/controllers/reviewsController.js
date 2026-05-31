@@ -13,6 +13,12 @@ function toRows(result) {
   return [];
 }
 
+function buildAvatarProxyUrl(userId, avatarPath, avatarUrl) {
+  const hasAvatar = avatarPath || avatarUrl;
+  if (!hasAvatar || !userId) return null;
+  return `/users/${encodeURIComponent(String(userId))}/avatar`;
+}
+
 // ── Ensure review_likes pivot table exists ─────────────────────────────────
 async function ensureReviewLikesTable() {
   await db.executeQuery(`
@@ -50,7 +56,7 @@ exports.getRecentReviews = async (req, res) => {
       u.firebase_uid,
       COALESCE(u.username, u.display_name) AS username,
         u.display_name,
-        u.avatar_url,
+        u.avatar_url, u.avatar_path,
         u.id AS user_id,
         b.id AS book_id, b.title AS book_title, b.authors, b.cover_url
       FROM reviews r
@@ -93,7 +99,7 @@ exports.getRecentReviews = async (req, res) => {
         // Fall back to COALESCE username, then raw name field
         user: String(row.display_name || row.username || row.name || ''),
         username: row.username ? String(row.username) : null,
-        avatar_url: row.avatar_url || row.user_avatar || null,
+        avatar_url: buildAvatarProxyUrl(row.user_id, row.avatar_path, row.avatar_url || row.user_avatar),
         rating: Number(row.rating ?? 0),
         book: String(row.book_title || row.book_title_raw || ''),
         author: Array.isArray(authors) ? (authors[0] || '') : (authors || ''),

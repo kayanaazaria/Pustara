@@ -73,21 +73,25 @@ exports.avatarById = async (req, res) => {
     const rows = await executeQuery(`SELECT * FROM ${table} WHERE id = $1`, [id]);
     const row = rows && rows[0] ? rows[0] : null;
     let avatarUrl = null;
-    const avatarPath = row && (row.avatar_path || row.avatarPath) ? String(row.avatar_path || row.avatarPath) : null;
+    const avatarPath = row && (row.avatar_path || row.avatarPath) ? String(row.avatar_path || row.avatarPath).trim() : null;
     if (avatarPath) {
       // If avatar_path appears to be a full URL, use it. Otherwise, construct Supabase storage URL
       if (/^https?:\/\//i.test(avatarPath)) {
         avatarUrl = avatarPath;
       } else {
-        const supabaseUrl = process.env.SUPABASE_URL || null;
+        const supabaseUrl = process.env.SUPABASE_URL || 'https://ojlrymmikhdfqzuycldm.supabase.co';
         const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || null;
         if (supabaseUrl) {
-          let filePath = avatarPath;
-          if (filePath.startsWith('http')) {
-            const parts = filePath.split('/pustara-storage/');
-            filePath = parts.length > 1 ? parts[1] : filePath;
+          let filePath = avatarPath.replace(/^\//, '');
+          if (filePath.startsWith('storage/v1/object/')) {
+            avatarUrl = `${supabaseUrl.replace(/\/$/, '')}/${filePath}`;
+          } else {
+            // Assume it's a relative path inside the pustara-storage bucket
+            if (filePath.startsWith('pustara-storage/')) {
+              filePath = filePath.replace(/^pustara-storage\//, '');
+            }
+            avatarUrl = `${supabaseUrl.replace(/\/$/, '')}/storage/v1/object/public/pustara-storage/${filePath}`;
           }
-          avatarUrl = `${supabaseUrl.replace(/\/$/, '')}/storage/v1/object/pustara-storage/${filePath}`;
           // attach serviceKey header when fetching later
           req._pustara_avatar_service_key = serviceKey;
         }
@@ -126,14 +130,16 @@ exports.avatarById = async (req, res) => {
 
     const fetchHeaders = { 'User-Agent': 'PustaraAvatarProxy/1.0' };
     // If a Supabase service key was stored on the request earlier, use it for auth
-    if (req._pustara_avatar_service_key) {
+    // Omit authorization for public files to avoid 403 invalid key errors.
+    if (req._pustara_avatar_service_key && !avatarUrl.includes('/public/')) {
       fetchHeaders['Authorization'] = `Bearer ${req._pustara_avatar_service_key}`;
     }
 
-    console.log('Fetching avatar URL:', parsed.toString(), 'useServiceKey=', Boolean(req._pustara_avatar_service_key));
+    console.log('Fetching avatar URL:', parsed.toString(), 'useServiceKey=', Boolean(req._pustara_avatar_service_key && !avatarUrl.includes('/public/')));
     const response = await fetch(parsed.toString(), {
       headers: fetchHeaders,
     });
+
 
     if (!response.ok || !response.body) {
       return res.status(502).json({ success: false, message: 'Failed to fetch avatar' });
