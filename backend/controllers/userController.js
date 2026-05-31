@@ -1011,7 +1011,7 @@ exports.getUserAvatar = async (req, res) => {
       return res.status(400).json({ success: false, message: 'User ID is required' });
     }
 
-    const table = isNeon ? 'users' : 'Users';
+    const table = db.isNeon ? 'users' : 'Users';
     const rows = toRows(
       await db.executeQuery(
         `SELECT id, avatar_url, avatar_path FROM ${table} WHERE id = $1 LIMIT 1`,
@@ -1097,7 +1097,10 @@ exports.getUserAvatar = async (req, res) => {
 
 
     if (!response.ok || !response.body) {
-      return res.status(502).json({ success: false, message: 'Failed to fetch avatar' });
+      return res.status(502).json({
+        success: false,
+        message: `Failed to fetch avatar: status=${response.status} url=${avatarUrl}`
+      });
     }
 
     const contentType = response.headers.get('content-type') || 'image/jpeg';
@@ -1113,7 +1116,10 @@ exports.getUserAvatar = async (req, res) => {
     return res.status(200).send(buffer);
   } catch (error) {
     console.error('Error serving avatar proxy:', error.message);
-    return res.status(500).json({ success: false, message: 'Failed to serve avatar' });
+    return res.status(500).json({
+      success: false,
+      message: `Failed to serve avatar: error=${error.message}`
+    });
   }
 };
 
