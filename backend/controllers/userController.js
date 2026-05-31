@@ -172,7 +172,30 @@ function buildPublicIdentity(userLike) {
 
 function buildAvatarProxyUrl(userId, hasAvatar) {
   if (!hasAvatar || !userId) return null;
-  return `/users/${encodeURIComponent(String(userId))}/avatar`;
+  
+  let buster = '';
+  try {
+    const value = String(hasAvatar).trim();
+    const parts = value.split('/');
+    const last = parts[parts.length - 1];
+    if (last) {
+      const match = last.match(/^(\d+)/);
+      if (match) {
+        buster = `?v=${match[1]}`;
+      } else {
+        let hash = 0;
+        for (let i = 0; i < last.length; i++) {
+          hash = (hash << 5) - hash + last.charCodeAt(i);
+          hash |= 0;
+        }
+        buster = `?v=${Math.abs(hash)}`;
+      }
+    }
+  } catch (_) {
+    // ignore
+  }
+
+  return `/users/${encodeURIComponent(String(userId))}/avatar${buster}`;
 }
 
 const AVATAR_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -199,6 +222,15 @@ function writeAvatarCache(key, value) {
     if (oldestKey) avatarProxyCache.delete(oldestKey);
   }
   avatarProxyCache.set(key, { ...value, createdAt: Date.now() });
+}
+
+function clearAvatarCacheForUser(userId) {
+  const prefix = `${String(userId)}:`;
+  for (const key of avatarProxyCache.keys()) {
+    if (key.startsWith(prefix)) {
+      avatarProxyCache.delete(key);
+    }
+  }
 }
 
 const STREAK_TIME_ZONE = 'Asia/Jakarta';
@@ -991,6 +1023,12 @@ exports.updateMyProfile = async (req, res) => {
     }
 
     const actorUserId = String(updateResult.data.id);
+
+    // Clear in-memory avatar proxy cache so new avatar is served immediately
+    if (updates.avatar_url !== undefined) {
+      clearAvatarCacheForUser(actorUserId);
+    }
+
     const profile = await buildUserProfile(actorUserId, actorUserId);
 
     res.json({
@@ -1074,7 +1112,7 @@ exports.getUserAvatar = async (req, res) => {
     const cached = readAvatarCache(cacheKey);
     if (cached) {
       res.setHeader('Content-Type', cached.contentType);
-      res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+      res.setHeader('Cache-Control', 'public, max-age=60, must-revalidate');
       res.setHeader('ETag', cached.etag);
       if (req.headers['if-none-match'] === cached.etag) {
         return res.status(304).end();
@@ -1110,7 +1148,7 @@ exports.getUserAvatar = async (req, res) => {
     writeAvatarCache(cacheKey, { buffer, contentType, etag });
 
     res.setHeader('Content-Type', contentType);
-    res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+    res.setHeader('Cache-Control', 'public, max-age=60, must-revalidate');
     res.setHeader('ETag', etag);
 
     return res.status(200).send(buffer);

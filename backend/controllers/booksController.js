@@ -295,7 +295,30 @@ async function resolveActiveLoanAccess(firebaseUid, bookId) {
 function buildAvatarProxyUrl(userId, avatarPath, avatarUrl) {
   const hasAvatar = avatarPath || avatarUrl;
   if (!hasAvatar || !userId) return null;
-  return `/users/${encodeURIComponent(String(userId))}/avatar`;
+  
+  let buster = '';
+  try {
+    const value = String(hasAvatar).trim();
+    const parts = value.split('/');
+    const last = parts[parts.length - 1];
+    if (last) {
+      const match = last.match(/^(\d+)/);
+      if (match) {
+        buster = `?v=${match[1]}`;
+      } else {
+        let hash = 0;
+        for (let i = 0; i < last.length; i++) {
+          hash = (hash << 5) - hash + last.charCodeAt(i);
+          hash |= 0;
+        }
+        buster = `?v=${Math.abs(hash)}`;
+      }
+    }
+  } catch (_) {
+    // ignore
+  }
+
+  return `/users/${encodeURIComponent(String(userId))}/avatar${buster}`;
 }
 
 // // GET /books/:id/reviews - Get book reviews
