@@ -78,9 +78,29 @@ class UserService {
 
   static async updateUser(uid, updates) {
     try {
-      const allowed = isNeon
-        ? ['display_name', 'username', 'avatar_url', 'bio', 'preferred_genres', 'activity_visible', 'public_reading_list', 'public_reviews']
-        : ['display_name', 'username', 'avatar_url', 'bio', 'preferred_genres', 'activity_visible', 'public_reading_list', 'public_reviews'];
+      // Automatically construct avatar_path when avatar_url is provided
+      if (typeof updates.avatar_url === 'string') {
+        const rawUrl = updates.avatar_url.trim();
+        if (rawUrl) {
+          updates.avatar_path = rawUrl.replace(/^https?:\/\/[^\/]+\//, '');
+        } else {
+          updates.avatar_path = null;
+        }
+      } else if (updates.avatar_url === null) {
+        updates.avatar_path = null;
+      }
+
+      const allowed = [
+        'display_name',
+        'username',
+        'avatar_url',
+        'avatar_path',
+        'bio',
+        'preferred_genres',
+        'activity_visible',
+        'public_reading_list',
+        'public_reviews'
+      ];
 
       const fields = Object.keys(updates).filter(k => allowed.includes(k));
       if (!fields.length) return { success: false, error: 'No valid fields to update' };

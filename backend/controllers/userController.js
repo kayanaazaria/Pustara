@@ -435,7 +435,7 @@ function mapUserCard(user, isFollowing = false) {
     firebase_uid: user.firebase_uid ? String(user.firebase_uid) : null,
     ...buildPublicIdentity(user),
     bio: user.bio || '',
-    avatar_url: buildAvatarProxyUrl(user.id, user.avatar_url),
+    avatar_url: buildAvatarProxyUrl(user.id, user.avatar_path || user.avatar_url),
     preferred_genres: parseStringArray(user.preferred_genres),
     followers_count: Number(user.followers_count || 0),
     total_read: Number(user.total_read || 0),
@@ -448,7 +448,7 @@ function mapUserCard(user, isFollowing = false) {
 async function buildUserProfile(targetUserId, actorId = null, userUid = null) {
   const userRows = toRows(
     await db.executeQuery(
-      `SELECT id, firebase_uid, username, display_name, email, bio, avatar_url, preferred_genres,
+      `SELECT id, firebase_uid, username, display_name, email, bio, avatar_url, avatar_path, preferred_genres,
               reading_streak, total_read, created_at, updated_at,
               activity_visible, public_reading_list, public_reviews
        FROM users WHERE id = $1`,
@@ -766,7 +766,7 @@ async function buildUserProfile(targetUserId, actorId = null, userUid = null) {
     name: identity.name,
     email: user.email || null,
     bio: user.bio || '',
-    avatar_url: buildAvatarProxyUrl(user.id, user.avatar_url),
+    avatar_url: buildAvatarProxyUrl(user.id, user.avatar_path || user.avatar_url),
     preferred_genres: parseStringArray(user.preferred_genres),
     total_read: resolvedTotalRead,
     reading_streak: resolvedStreak,
@@ -1011,16 +1011,63 @@ exports.getUserAvatar = async (req, res) => {
       return res.status(400).json({ success: false, message: 'User ID is required' });
     }
 
+    const table = isNeon ? 'users' : 'Users';
     const rows = toRows(
       await db.executeQuery(
-        'SELECT avatar_url FROM users WHERE id = $1 LIMIT 1',
+        `SELECT id, avatar_url, avatar_path FROM ${table} WHERE id = $1 LIMIT 1`,
         [userId]
       )
     );
 
-    const avatarUrl = rows[0]?.avatar_url ? String(rows[0].avatar_url).trim() : '';
+    const row = rows && rows[0] ? rows[0] : null;
+    if (!row) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    let avatarUrl = null;
+    let serviceKey = null;
+
+    const avatarPath = row.avatar_path ? String(row.avatar_path).trim() : null;
+    if (avatarPath) {
+      // If avatar_path appears to be a full URL, use it. Otherwise, construct Supabase storage URL
+      if (/^https?:\/\//i.test(avatarPath)) {
+        avatarUrl = avatarPath;
+      } else {
+        const supabaseUrl = process.env.SUPABASE_URL || null;
+        serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || null;
+        if (supabaseUrl) {
+          let filePath = avatarPath.replace(/^\//, '');
+          if (filePath.startsWith('storage/v1/object/')) {
+            avatarUrl = `${supabaseUrl.replace(/\/$/, '')}/${filePath}`;
+          } else {
+            // Assume it's a relative path inside the pustara-storage bucket
+            if (filePath.startsWith('pustara-storage/')) {
+              filePath = filePath.replace(/^pustara-storage\//, '');
+            }
+            avatarUrl = `${supabaseUrl.replace(/\/$/, '')}/storage/v1/object/pustara-storage/${filePath}`;
+          }
+        }
+      }
+    }
+
+    if (!avatarUrl) {
+      avatarUrl = row.avatar_url ? String(row.avatar_url).trim() : null;
+    }
+
     if (!avatarUrl) {
       return res.status(404).json({ success: false, message: 'Avatar not found' });
+    }
+
+    // Handle data: URLs quickly
+    if (/^data:/i.test(avatarUrl)) {
+      const match = avatarUrl.match(/^data:([^;]+);base64,(.*)$/i);
+      if (!match) return res.status(400).json({ success: false, message: 'Unsupported data url' });
+      const contentType = match[1] || 'application/octet-stream';
+      const buffer = Buffer.from(match[2], 'base64');
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      return res.status(200).send(buffer);
     }
 
     const cacheKey = getAvatarCacheKey(userId, avatarUrl);
@@ -1035,10 +1082,15 @@ exports.getUserAvatar = async (req, res) => {
       return res.status(200).send(cached.buffer);
     }
 
+    const fetchHeaders = {
+      'User-Agent': 'PustaraAvatarProxy/1.0',
+    };
+    if (serviceKey) {
+      fetchHeaders['Authorization'] = `Bearer ${serviceKey}`;
+    }
+
     const response = await fetch(avatarUrl, {
-      headers: {
-        'User-Agent': 'PustaraAvatarProxy/1.0',
-      },
+      headers: fetchHeaders,
     });
 
     if (!response.ok || !response.body) {
@@ -1243,7 +1295,7 @@ exports.getRecommendedUsers = async (req, res) => {
 
     const recommendationRows = toRows(
       await db.executeQuery(
-      `SELECT u.id, u.firebase_uid, u.username, u.display_name, u.bio, u.avatar_url, u.preferred_genres,
+      `SELECT u.id, u.firebase_uid, u.username, u.display_name, u.bio, u.avatar_url, u.avatar_path, u.preferred_genres,
         u.total_read, u.reading_streak,
         (SELECT COUNT(*) FROM reviews r WHERE r.user_id = u.id) AS reviews_written,
                 (SELECT COUNT(*) FROM follows f WHERE f.following_id = u.id) AS followers_count
@@ -1259,7 +1311,7 @@ exports.getRecommendedUsers = async (req, res) => {
       id: String(user.id),
       ...buildPublicIdentity(user),
       bio: user.bio || '',
-      avatar_url: user.avatar_url || null,
+      avatar_url: buildAvatarProxyUrl(user.id, user.avatar_path || user.avatar_url),
       preferred_genres: parseStringArray(user.preferred_genres),
       followers_count: Number(user.followers_count || 0),
       total_read: Number(user.total_read || 0),
@@ -1299,7 +1351,7 @@ exports.searchUsers = async (req, res) => {
 
     const rows = toRows(
       await db.executeQuery(
-        `SELECT u.id, u.username, u.display_name, u.bio, u.avatar_url, u.preferred_genres,
+        `SELECT u.id, u.username, u.display_name, u.bio, u.avatar_url, u.avatar_path, u.preferred_genres,
                 u.total_read, u.reading_streak,
                 (SELECT COUNT(*) FROM follows f WHERE f.following_id = u.id) AS followers_count,
                 ${actorId ? `EXISTS(
@@ -1344,7 +1396,7 @@ exports.getMyFollowing = async (req, res) => {
 
     const rows = toRows(
       await db.executeQuery(
-      `SELECT u.id, u.firebase_uid, u.username, u.display_name, u.bio, u.avatar_url, u.preferred_genres,
+      `SELECT u.id, u.firebase_uid, u.username, u.display_name, u.bio, u.avatar_url, u.avatar_path, u.preferred_genres,
         u.total_read, u.reading_streak,
         (SELECT COUNT(*) FROM reviews r WHERE r.user_id = u.id) AS reviews_written,
                 (SELECT COUNT(*) FROM follows f2 WHERE f2.following_id = u.id) AS followers_count
@@ -1381,7 +1433,7 @@ exports.getMyFollowers = async (req, res) => {
 
     const rows = toRows(
       await db.executeQuery(
-      `SELECT u.id, u.firebase_uid, u.username, u.display_name, u.bio, u.avatar_url, u.preferred_genres,
+      `SELECT u.id, u.firebase_uid, u.username, u.display_name, u.bio, u.avatar_url, u.avatar_path, u.preferred_genres,
         u.total_read, u.reading_streak,
         (SELECT COUNT(*) FROM reviews r WHERE r.user_id = u.id) AS reviews_written,
                 (SELECT COUNT(*) FROM follows f2 WHERE f2.following_id = u.id) AS followers_count
