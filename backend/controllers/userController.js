@@ -1033,7 +1033,7 @@ exports.getUserAvatar = async (req, res) => {
       if (/^https?:\/\//i.test(avatarPath)) {
         avatarUrl = avatarPath;
       } else {
-        const supabaseUrl = process.env.SUPABASE_URL || null;
+        const supabaseUrl = process.env.SUPABASE_URL || 'https://ojlrymmikhdfqzuycldm.supabase.co';
         serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || null;
         if (supabaseUrl) {
           let filePath = avatarPath.replace(/^\//, '');
@@ -1044,7 +1044,7 @@ exports.getUserAvatar = async (req, res) => {
             if (filePath.startsWith('pustara-storage/')) {
               filePath = filePath.replace(/^pustara-storage\//, '');
             }
-            avatarUrl = `${supabaseUrl.replace(/\/$/, '')}/storage/v1/object/pustara-storage/${filePath}`;
+            avatarUrl = `${supabaseUrl.replace(/\/$/, '')}/storage/v1/object/public/pustara-storage/${filePath}`;
           }
         }
       }
@@ -1085,13 +1085,16 @@ exports.getUserAvatar = async (req, res) => {
     const fetchHeaders = {
       'User-Agent': 'PustaraAvatarProxy/1.0',
     };
-    if (serviceKey) {
+    // Only send the serviceKey if it's set and we're NOT accessing a public URL.
+    // Sending an invalid or empty Authorization header to a public path will cause Supabase to reject the request with 403.
+    if (serviceKey && !avatarUrl.includes('/public/')) {
       fetchHeaders['Authorization'] = `Bearer ${serviceKey}`;
     }
 
     const response = await fetch(avatarUrl, {
       headers: fetchHeaders,
     });
+
 
     if (!response.ok || !response.body) {
       return res.status(502).json({ success: false, message: 'Failed to fetch avatar' });

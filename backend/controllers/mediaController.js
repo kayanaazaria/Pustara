@@ -79,7 +79,7 @@ exports.avatarById = async (req, res) => {
       if (/^https?:\/\//i.test(avatarPath)) {
         avatarUrl = avatarPath;
       } else {
-        const supabaseUrl = process.env.SUPABASE_URL || null;
+        const supabaseUrl = process.env.SUPABASE_URL || 'https://ojlrymmikhdfqzuycldm.supabase.co';
         const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || null;
         if (supabaseUrl) {
           let filePath = avatarPath.replace(/^\//, '');
@@ -90,7 +90,7 @@ exports.avatarById = async (req, res) => {
             if (filePath.startsWith('pustara-storage/')) {
               filePath = filePath.replace(/^pustara-storage\//, '');
             }
-            avatarUrl = `${supabaseUrl.replace(/\/$/, '')}/storage/v1/object/pustara-storage/${filePath}`;
+            avatarUrl = `${supabaseUrl.replace(/\/$/, '')}/storage/v1/object/public/pustara-storage/${filePath}`;
           }
           // attach serviceKey header when fetching later
           req._pustara_avatar_service_key = serviceKey;
@@ -130,14 +130,16 @@ exports.avatarById = async (req, res) => {
 
     const fetchHeaders = { 'User-Agent': 'PustaraAvatarProxy/1.0' };
     // If a Supabase service key was stored on the request earlier, use it for auth
-    if (req._pustara_avatar_service_key) {
+    // Omit authorization for public files to avoid 403 invalid key errors.
+    if (req._pustara_avatar_service_key && !avatarUrl.includes('/public/')) {
       fetchHeaders['Authorization'] = `Bearer ${req._pustara_avatar_service_key}`;
     }
 
-    console.log('Fetching avatar URL:', parsed.toString(), 'useServiceKey=', Boolean(req._pustara_avatar_service_key));
+    console.log('Fetching avatar URL:', parsed.toString(), 'useServiceKey=', Boolean(req._pustara_avatar_service_key && !avatarUrl.includes('/public/')));
     const response = await fetch(parsed.toString(), {
       headers: fetchHeaders,
     });
+
 
     if (!response.ok || !response.body) {
       return res.status(502).json({ success: false, message: 'Failed to fetch avatar' });
